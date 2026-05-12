@@ -1,0 +1,119 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Product being launched
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  tagline     String
+  description String
+  url         String
+  logoUrl     String?
+  screenshotUrls String? // JSON array of URLs
+  category    String
+  targetAudience String
+  keywords    String   // comma-separated
+  pricing     String?  // free, freemium, paid
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  campaigns   Campaign[]
+  socialPages SocialPage[]
+}
+
+// A launch campaign targeting multiple platforms
+model Campaign {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  name        String
+  status      String   @default("draft") // draft, running, paused, completed
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  submissions Submission[]
+}
+
+// Individual submission to a platform
+model Submission {
+  id          String   @id @default(cuid())
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id])
+  platform    String   // e.g., "product_hunt", "betalist", "reddit"
+  status      String   @default("pending") // pending, running, success, failed, captcha_needed, manual_needed
+  url         String?  // resulting URL after submission
+  error       String?
+  screenshot  String?  // path to screenshot on failure
+  attempts    Int      @default(0)
+  lastAttempt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Stored credentials for platforms (encrypted)
+model Account {
+  id          String   @id @default(cuid())
+  platform    String
+  username    String
+  password    String   // encrypted
+  cookies     String?  // encrypted JSON - for session reuse
+  isActive    Boolean  @default(true)
+  lastUsed    DateTime?
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([platform, username])
+}
+
+// Social media pages created for products
+model SocialPage {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  platform    String   // linkedin, facebook, instagram, twitter
+  pageUrl     String?
+  pageName    String?
+  status      String   @default("pending") // pending, created, verified, failed
+  credentials String?  // encrypted JSON with page-specific credentials
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Content templates
+model Template {
+  id          String   @id @default(cuid())
+  name        String
+  platform    String
+  type        String   // post, dm, description, bio
+  content     String   // template with {{variables}}
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Queue for scheduled automation tasks
+model TaskQueue {
+  id          String   @id @default(cuid())
+  type        String   // submission, page_creation, post, dm
+  payload     String   // JSON
+  status      String   @default("queued") // queued, running, completed, failed
+  priority    Int      @default(0)
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+  error       String?
+  retries     Int      @default(0)
+  maxRetries  Int      @default(3)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
