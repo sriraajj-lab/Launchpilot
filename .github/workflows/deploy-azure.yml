@@ -50,7 +50,7 @@ jobs:
           az containerapp update \
             --name ${{ env.WEB_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --image ${{ env.ACR_NAME }}.azurecr.io/launchpilot-worker:${{ github.sha }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/launchpilot-web:${{ github.sha }} \
             --set-env-vars "NODE_ENV=production"
 
       - name: Update worker container app

@@ -69,7 +69,7 @@ async function sendSlackNotification(
   
   const message = {
     channel: config.channel,
-    username: 'SparkBill',
+    username: 'LaunchPilot',
     icon_emoji: ':rocket:',
     attachments: [{
       color,
@@ -111,7 +111,7 @@ async function sendDiscordNotification(
   const colorInt = parseInt(color.replace('#', ''), 16);
 
   const message = {
-    username: 'SparkBill',
+    username: 'LaunchPilot',
     avatar_url: 'https://cdn-icons-png.flaticon.com/512/2534/2534204.png',
     embeds: [{
       title: `${emoji} ${getEventTitle(payload.event)}`,
@@ -123,7 +123,7 @@ async function sendDiscordNotification(
         ...(payload.url ? [{ name: 'URL', value: payload.url, inline: false }] : []),
       ],
       timestamp: payload.timestamp.toISOString(),
-      footer: { text: 'SparkBill' },
+      footer: { text: 'LaunchPilot' },
     }],
   };
 
@@ -189,7 +189,7 @@ function formatNotificationBody(payload: NotificationPayload): string {
       return `**${payload.productName}** was approved on **${payload.platform}**! 🎉${payload.url ? `\nLive at: ${payload.url}` : ''}`;
     
     default:
-      return payload.details || 'SparkBill notification';
+      return payload.details || 'LaunchPilot notification';
   }
 }
 

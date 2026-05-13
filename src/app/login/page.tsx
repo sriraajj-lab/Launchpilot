@@ -39,7 +39,7 @@ export default function LoginPage() {
         <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-2 mb-2">
             <Rocket className="text-brand-600" size={32} />
-            <h1 className="text-2xl font-bold text-gray-900">SparkBill</h1>
+            <h1 className="text-2xl font-bold text-gray-900">LaunchPilot</h1>
           </div>
           <p className="text-gray-500">Sign in to your account</p>
         </div>
