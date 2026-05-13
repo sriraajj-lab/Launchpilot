@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import { Sidebar } from '@/components/layout/sidebar';
+import { Providers } from '@/components/providers';
 import { Toaster } from 'sonner';
 
 const inter = Inter({ subsets: ['latin'] });
@@ -15,13 +16,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className={inter.className}>
-        <div className="flex h-screen">
-          <Sidebar />
-          <main className="flex-1 overflow-auto p-6 lg:p-8">
-            {children}
-          </main>
-        </div>
-        <Toaster position="bottom-right" />
+        <Providers>
+          <div className="flex h-screen">
+            <Sidebar />
+            <main className="flex-1 overflow-auto p-6 lg:p-8">
+              {children}
+            </main>
+          </div>
+          <Toaster position="bottom-right" />
+        </Providers>
       </body>
     </html>
   );

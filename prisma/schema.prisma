@@ -3,65 +3,130 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-// Product being launched
+// === AUTHENTICATION (NextAuth) ===
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  password      String?   // hashed, for credentials login
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      AuthAccount[]
+  sessions      Session[]
+  products      Product[]
+  campaigns     Campaign[]
+  platformAccounts PlatformAccount[]
+  templates     Template[]
+}
+
+model AuthAccount {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// === CORE MODELS ===
+
 model Product {
-  id          String   @id @default(cuid())
-  name        String
-  tagline     String
-  description String
-  url         String
-  logoUrl     String?
-  screenshotUrls String? // JSON array of URLs
-  category    String
-  targetAudience String
-  keywords    String   // comma-separated
-  pricing     String?  // free, freemium, paid
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  tagline        String
+  description    String
+  url            String
+  logoUrl        String?
+  screenshotUrls String?  // JSON array of URLs
+  category       String
+  targetAudience String?
+  keywords       String   // comma-separated
+  pricing        String?  // free, freemium, paid
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  campaigns   Campaign[]
-  socialPages SocialPage[]
+  campaigns      Campaign[]
+  socialPages    SocialPage[]
 }
 
-// A launch campaign targeting multiple platforms
 model Campaign {
-  id          String   @id @default(cuid())
-  productId   String
-  product     Product  @relation(fields: [productId], references: [id])
-  name        String
-  status      String   @default("draft") // draft, running, paused, completed
-  scheduledAt DateTime?
-  startedAt   DateTime?
-  completedAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name            String
+  status          String    @default("draft") // draft, queued, running, paused, completed, failed
+  targetPlatforms String    // JSON array of platform IDs
+  targetSubreddits String?  // JSON array of subreddit names
+  createSocialPages Boolean @default(false)
+  delayMinutes    Int       @default(5)
+  scheduledAt     DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  submissions Submission[]
+  submissions     Submission[]
 }
 
-// Individual submission to a platform
 model Submission {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   campaignId  String
-  campaign    Campaign @relation(fields: [campaignId], references: [id])
-  platform    String   // e.g., "product_hunt", "betalist", "reddit"
-  status      String   @default("pending") // pending, running, success, failed, captcha_needed, manual_needed
-  url         String?  // resulting URL after submission
+  campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  platform    String    // e.g., "product_hunt", "betalist", "reddit"
+  platformName String   // display name
+  status      String    @default("pending") // pending, queued, running, success, failed, captcha_needed, manual_needed
+  resultUrl   String?   // resulting URL after submission
   error       String?
-  screenshot  String?  // path to screenshot on failure
-  attempts    Int      @default(0)
+  screenshot  String?   // base64 or URL to screenshot
+  attempts    Int       @default(0)
   lastAttempt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 }
 
-// Stored credentials for platforms (encrypted)
-model Account {
+// Platform credentials (encrypted)
+model PlatformAccount {
   id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   platform    String
   username    String
   password    String   // encrypted
@@ -72,19 +137,19 @@ model Account {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  @@unique([platform, username])
+  @@unique([userId, platform, username])
 }
 
 // Social media pages created for products
 model SocialPage {
   id          String   @id @default(cuid())
   productId   String
-  product     Product  @relation(fields: [productId], references: [id])
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
   platform    String   // linkedin, facebook, instagram, twitter
   pageUrl     String?
   pageName    String?
-  status      String   @default("pending") // pending, created, verified, failed
-  credentials String?  // encrypted JSON with page-specific credentials
+  status      String   @default("pending") // pending, creating, created, verified, failed
+  error       String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
@@ -92,28 +157,32 @@ model SocialPage {
 // Content templates
 model Template {
   id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   name        String
   platform    String
-  type        String   // post, dm, description, bio
+  type        String   // post, dm, description, bio, thread, comment
   content     String   // template with {{variables}}
   isDefault   Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
 
-// Queue for scheduled automation tasks
-model TaskQueue {
-  id          String   @id @default(cuid())
-  type        String   // submission, page_creation, post, dm
-  payload     String   // JSON
-  status      String   @default("queued") // queued, running, completed, failed
-  priority    Int      @default(0)
+// Job queue for automation tasks
+model Job {
+  id          String    @id @default(cuid())
+  type        String    // campaign_run, submission, social_page_creation, social_post
+  campaignId  String?
+  submissionId String?
+  payload     String    // JSON
+  status      String    @default("queued") // queued, running, completed, failed, retry
+  priority    Int       @default(0)
   scheduledAt DateTime?
   startedAt   DateTime?
   completedAt DateTime?
   error       String?
-  retries     Int      @default(0)
-  maxRetries  Int      @default(3)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  retries     Int       @default(0)
+  maxRetries  Int       @default(3)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 }

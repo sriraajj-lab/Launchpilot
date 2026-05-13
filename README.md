@@ -1,6 +1,6 @@
 # Launch Pilot
 
-**Marketing Launch Automation Tool** - Submit your product to 25+ directories, create social media pages, and automate outreach with one click.
+**Web-Based Marketing Launch Automation Tool** - Submit your product to 25+ directories, create social media pages, and automate outreach - all from a web dashboard.
 
 ## What It Does
 
@@ -12,142 +12,166 @@
 | **Startup Listings** | Crunchbase, AngelList, StartupBase, Launching Next, StartupRanking, StackShare |
 | **SEO/Backlinks** | Toolify.ai, Futurepedia, There Is An AI For That, MicroLaunch, DevHunt, Uneed |
 
-## How It Works
+## Architecture (Web-Based SaaS)
 
 ```
-You fill out ONE form (product name, description, URL, screenshots, target audience)
-     |
-Tool launches Playwright browser automation
-     |
-Visits each site -> fills their specific form -> submits
-     |
-Logs results (submitted / failed / needs CAPTCHA / needs manual click)
+[Browser / User]
+      |
+[Next.js Frontend] -- Dashboard, Campaign Builder, Account Manager
+      |
+[Next.js API Routes] -- Authentication, CRUD, Queue management
+      |
+[PostgreSQL + Prisma] -- Products, Campaigns, Submissions, Credentials (encrypted)
+      |
+[Background Worker] -- Polls job queue, runs Playwright headless on server
+      |
+[Playwright Browser] -- Visits sites, fills forms, submits, takes screenshots
 ```
 
 ## Tech Stack
 
-- **Playwright** - Headless browser automation with anti-detection
-- **Next.js 14** - Dashboard UI (React + Tailwind CSS)
-- **SQLite + Prisma** - Track submissions, campaigns, accounts
-- **No external APIs** - Just browser automation (runs locally)
+- **Next.js 14** - Full-stack React framework (frontend + API)
+- **NextAuth.js** - Authentication (email/password + OAuth)
+- **Prisma + PostgreSQL** - Database ORM (user data, campaigns, encrypted credentials)
+- **Playwright** - Server-side headless browser automation
+- **Tailwind CSS** - Dashboard UI styling
+- **SWR** - Real-time data fetching with auto-refresh
+- **AES-256-GCM** - Encryption for stored platform credentials
 
 ## Features
 
-- **Campaign Builder** - Enter product details once, select which platforms to target
-- **Platform Recipes** - Pre-built scripts for 25+ sites with form field mappings
-- **Social Page Creator** - Auto-create LinkedIn, Facebook, Instagram, Twitter pages
-- **Account Manager** - Store login credentials encrypted (AES-256)
-- **Smart Scheduling** - Run submissions with random delays to look natural
-- **Status Dashboard** - See which submissions succeeded, failed, or need CAPTCHA
-- **Template Library** - Reddit posts, LinkedIn DMs, Twitter threads, directory descriptions
+- **Multi-user SaaS** - User accounts with isolated data
+- **Campaign Builder** - 4-step wizard: Product -> Platforms -> Schedule -> Launch
+- **25 Platform Configs** - Pre-built form field mappings and selectors
 - **Quick Submit** - One-click submit to all fully-automated directories
-- **Multi-product** - Launch multiple products, track each separately
-
-## Automation Levels
-
-| Level | Behavior | Platforms |
-|-------|----------|-----------|
-| **Full Auto** | Fill form + submit automatically | BetaList, SaaSHub, StartupBase, Launching Next, MicroLaunch, Uneed, DevHunt, Toolify, Futurepedia |
-| **Semi Auto** | Fill form + attempt submit (may need manual CAPTCHA) | Product Hunt, Indie Hackers, G2, Capterra, Hacker News, Crunchbase |
-| **Manual** | Pre-fill content + open browser (user clicks submit) | Reddit, LinkedIn posts, LinkedIn DMs |
+- **Social Page Creator** - Auto-create LinkedIn, Facebook, Instagram, Twitter pages
+- **Account Manager** - Encrypted credential storage (AES-256-GCM)
+- **Background Worker** - Server-side job queue processes submissions sequentially
+- **Real-time Dashboard** - Live stats, submission progress, recent activity (auto-refreshes)
+- **Template Library** - 12 content templates for Reddit, LinkedIn, Twitter, HN, directories
+- **Smart Timing** - Random delays between submissions to look natural
+- **CAPTCHA Detection** - Automatically flags submissions needing manual intervention
+- **Screenshots** - Captures page state on success/failure for debugging
 
 ## Getting Started
 
 ### Prerequisites
 
 - Node.js 18+
-- A machine with a browser (runs locally, not in cloud)
+- PostgreSQL (or use SQLite for local dev)
+- Redis (optional, for BullMQ - falls back to DB polling)
 
 ### Installation
 
 ```bash
-# Clone the repo
 git clone https://github.com/sriraajj-lab/Launchpilot.git
 cd Launchpilot
 
 # Install dependencies
 npm install
 
-# Install Playwright browsers
+# Install Playwright browsers (for the worker)
 npx playwright install chromium
 
-# Setup database
+# Configure environment
 cp .env.example .env
-# Edit .env with your encryption key
+# Edit .env with your database URL, NEXTAUTH_SECRET, ENCRYPTION_KEY
+
+# Setup database
 npx prisma db push
 
-# Start the dashboard
+# Start the web app
 npm run dev
+
+# In a separate terminal - start the background worker
+npm run worker
 ```
 
-### Quick Launch (CLI)
+### Deploy to Production
 
-```typescript
-import { quickLaunch } from './src/lib/automation/runner';
+Works with any Node.js hosting that supports:
+- Long-running processes (for the worker)
+- PostgreSQL database
+- Headless browser (Docker with Playwright recommended)
 
-const product = {
-  name: 'MyApp',
-  tagline: 'The simplest way to do X',
-  description: 'MyApp helps you...',
-  url: 'https://myapp.com',
-  category: 'SaaS',
-  keywords: 'productivity, automation',
-  pricing: 'Freemium',
-};
-
-const credentials = {
-  betalist: { username: 'you@email.com', password: 'xxx' },
-  // ... more platforms
-};
-
-const results = await quickLaunch(product, credentials);
-console.log(results);
+**Recommended:** Deploy on a VPS (Railway, Render, DigitalOcean) with Docker:
+```dockerfile
+FROM mcr.microsoft.com/playwright:v1.44.0-jammy
+WORKDIR /app
+COPY . .
+RUN npm install
+RUN npx prisma generate
+CMD ["npm", "start"]
 ```
 
 ## Project Structure
 
 ```
 src/
-├── app/                          # Next.js pages (Dashboard UI)
-│   ├── page.tsx                  # Main dashboard
-│   ├── campaigns/                # Campaign management
-│   │   ├── page.tsx              # Campaign list
-│   │   └── new/page.tsx          # Campaign builder (multi-step form)
-│   ├── accounts/page.tsx         # Account/credential management
-│   ├── quick-submit/page.tsx     # One-click directory submission
-│   └── layout.tsx                # App layout with sidebar
+├── app/
+│   ├── page.tsx                    # Dashboard (real-time stats & activity)
+│   ├── login/page.tsx              # Sign in
+│   ├── register/page.tsx           # Create account
+│   ├── campaigns/
+│   │   ├── page.tsx                # Campaign list (live status)
+│   │   └── new/page.tsx            # 4-step campaign builder
+│   ├── accounts/page.tsx           # Encrypted credential management
+│   ├── social-pages/page.tsx       # Social page creation UI
+│   ├── templates/page.tsx          # Template library & editor
+│   ├── quick-submit/page.tsx       # One-click directory submission
+│   └── api/
+│       ├── auth/[...nextauth]/     # NextAuth endpoints
+│       ├── auth/register/          # User registration
+│       ├── dashboard/              # Stats & activity feed
+│       ├── products/               # CRUD
+│       ├── campaigns/              # CRUD + launch
+│       ├── accounts/               # CRUD (encrypted)
+│       ├── templates/              # List + create
+│       └── social-pages/           # Create & manage
 ├── components/
-│   └── layout/sidebar.tsx        # Navigation sidebar
+│   ├── layout/sidebar.tsx          # Navigation with auth state
+│   └── providers.tsx               # NextAuth SessionProvider
 └── lib/
+    ├── db.ts                       # Prisma client singleton
+    ├── auth.ts                     # NextAuth config
+    ├── auth-helpers.ts             # Server auth utilities
+    ├── encryption.ts               # AES-256-GCM encrypt/decrypt
+    ├── hooks.ts                    # SWR data fetching hooks
+    ├── queue/
+    │   ├── producer.ts             # Creates jobs in the DB
+    │   └── worker.ts               # Background job processor
     ├── automation/
-    │   ├── browser.ts            # Playwright engine (anti-detection, human-like typing)
-    │   ├── linkedin-page.ts      # LinkedIn Company Page creator
-    │   ├── facebook-page.ts      # Facebook Business Page creator
-    │   ├── instagram-profile.ts  # Instagram Business Profile setup
-    │   ├── twitter-profile.ts    # Twitter/X profile setup
-    │   ├── reddit-poster.ts      # Reddit posting automation
-    │   ├── directory-submitter.ts # Generic directory submission engine
-    │   └── runner.ts             # Campaign orchestrator
+    │   ├── browser.ts              # Core Playwright engine
+    │   ├── server-engine.ts        # Server-side submission engine
+    │   ├── linkedin-page.ts        # LinkedIn page creator
+    │   ├── facebook-page.ts        # Facebook page creator
+    │   ├── instagram-profile.ts    # Instagram profile setup
+    │   ├── twitter-profile.ts      # Twitter/X profile setup
+    │   ├── reddit-poster.ts        # Reddit posting
+    │   ├── directory-submitter.ts  # Generic directory engine
+    │   └── runner.ts               # Campaign orchestrator
     ├── platforms/
-    │   └── registry.ts           # 25 platform configs with selectors & field mappings
+    │   └── registry.ts             # 25 platform configs
     └── templates/
-        └── defaults.ts           # 12 content templates (Reddit, LinkedIn, Twitter, HN, etc.)
+        └── defaults.ts             # 12 default content templates
 ```
 
-## Security Notes
+## How It Works
 
-- All credentials are encrypted with AES-256 using your `ENCRYPTION_KEY`
-- Credentials never leave your machine
-- Browser automation runs locally only
-- No data sent to external servers (except the platforms you're submitting to)
+1. **Sign up** at the web dashboard
+2. **Add your product** (name, URL, description, logo)
+3. **Store platform credentials** (encrypted with AES-256-GCM)
+4. **Create a campaign** - select platforms, set timing
+5. **Launch** - the server worker processes submissions in the background
+6. **Monitor** - dashboard shows real-time progress, screenshots on failure
 
-## Contributing
+## Security
 
-PRs welcome! Key areas for contribution:
-- Adding new platform recipes
-- Improving anti-detection measures
-- Adding more content templates
-- UI/UX improvements
+- All credentials encrypted at rest (AES-256-GCM)
+- Passwords hashed with bcrypt (12 rounds)
+- JWT sessions with NextAuth
+- User data fully isolated (multi-tenant)
+- Browser automation runs server-side only
 
 ## License
 

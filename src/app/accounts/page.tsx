@@ -1,32 +1,65 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, Eye, EyeOff, Trash2, Check, Key, Shield } from 'lucide-react';
+import { Plus, Eye, EyeOff, Trash2, Check, Key, Shield, Loader2 } from 'lucide-react';
+import { useAccounts } from '@/lib/hooks';
+import { toast } from 'sonner';
+import { formatDistanceToNow } from 'date-fns';
 
-interface StoredAccount {
-  id: string;
-  platform: string;
-  username: string;
-  isActive: boolean;
-  lastUsed: string | null;
-}
-
-const mockAccounts: StoredAccount[] = [
-  { id: '1', platform: 'Product Hunt', username: 'john@example.com', isActive: true, lastUsed: '2025-01-20' },
-  { id: '2', platform: 'LinkedIn', username: 'john.doe@company.com', isActive: true, lastUsed: '2025-01-19' },
-  { id: '3', platform: 'Reddit', username: 'throwaway_launch', isActive: true, lastUsed: '2025-01-18' },
-  { id: '4', platform: 'Facebook', username: 'john@example.com', isActive: true, lastUsed: '2025-01-17' },
-  { id: '5', platform: 'Instagram', username: 'myapp_official', isActive: false, lastUsed: null },
-  { id: '6', platform: 'Twitter / X', username: '@myapp', isActive: true, lastUsed: '2025-01-15' },
-  { id: '7', platform: 'Hacker News', username: 'john_hn', isActive: true, lastUsed: '2025-01-14' },
-  { id: '8', platform: 'BetaList', username: 'john@example.com', isActive: true, lastUsed: null },
+const PLATFORM_OPTIONS = [
+  'linkedin', 'facebook', 'instagram', 'twitter', 'reddit',
+  'product_hunt', 'hackernews', 'betalist', 'indie_hackers',
+  'crunchbase', 'g2', 'capterra', 'saashub', 'alternativeto',
+  'angellist', 'devhunt', 'microlaunch',
 ];
 
 export default function AccountsPage() {
-  const [accounts] = useState<StoredAccount[]>(mockAccounts);
+  const { data: accounts, isLoading, mutate } = useAccounts();
   const [showAddForm, setShowAddForm] = useState(false);
-  const [newAccount, setNewAccount] = useState({ platform: '', username: '', password: '' });
+  const [saving, setSaving] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [newAccount, setNewAccount] = useState({ platform: '', username: '', password: '' });
+
+  const saveAccount = async () => {
+    if (!newAccount.platform || !newAccount.username || !newAccount.password) {
+      toast.error('All fields are required');
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newAccount),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      toast.success('Account saved (encrypted)');
+      setNewAccount({ platform: '', username: '', password: '' });
+      setShowAddForm(false);
+      mutate();
+    } catch (error: any) {
+      toast.error(error.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteAccount = async (id: string) => {
+    if (!confirm('Delete this account?')) return;
+    try {
+      const res = await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to delete');
+      toast.success('Account deleted');
+      mutate();
+    } catch (error: any) {
+      toast.error(error.message);
+    }
+  };
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center h-64"><Loader2 className="animate-spin text-brand-600" size={32} /></div>;
+  }
 
   return (
     <div className="space-y-6">
@@ -35,12 +68,8 @@ export default function AccountsPage() {
           <h1 className="text-2xl font-bold text-gray-900">Account Manager</h1>
           <p className="text-gray-500 mt-1">Store encrypted credentials for platform automation</p>
         </div>
-        <button
-          onClick={() => setShowAddForm(!showAddForm)}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 transition-colors font-medium"
-        >
-          <Plus size={18} />
-          Add Account
+        <button onClick={() => setShowAddForm(!showAddForm)} className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 font-medium">
+          <Plus size={18} /> Add Account
         </button>
       </div>
 
@@ -49,7 +78,7 @@ export default function AccountsPage() {
         <Shield className="text-blue-600 mt-0.5 flex-shrink-0" size={20} />
         <div>
           <p className="text-sm font-medium text-blue-900">Credentials are encrypted at rest</p>
-          <p className="text-sm text-blue-700">All passwords are encrypted using AES-256 with your ENCRYPTION_KEY environment variable. They never leave your machine.</p>
+          <p className="text-sm text-blue-700">All passwords are encrypted using AES-256-GCM. They are decrypted only when running automations on the server.</p>
         </div>
       </div>
 
@@ -63,95 +92,80 @@ export default function AccountsPage() {
               <select value={newAccount.platform} onChange={e => setNewAccount(p => ({ ...p, platform: e.target.value }))}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500">
                 <option value="">Select platform...</option>
-                <option value="linkedin">LinkedIn</option>
-                <option value="facebook">Facebook</option>
-                <option value="instagram">Instagram</option>
-                <option value="twitter">Twitter / X</option>
-                <option value="reddit">Reddit</option>
-                <option value="product_hunt">Product Hunt</option>
-                <option value="hackernews">Hacker News</option>
-                <option value="betalist">BetaList</option>
-                <option value="indie_hackers">Indie Hackers</option>
-                <option value="crunchbase">Crunchbase</option>
-                <option value="g2">G2</option>
-                <option value="capterra">Capterra</option>
+                {PLATFORM_OPTIONS.map(p => (
+                  <option key={p} value={p}>{p.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</option>
+                ))}
               </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Username / Email</label>
               <input type="text" value={newAccount.username} onChange={e => setNewAccount(p => ({ ...p, username: e.target.value }))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500"
-                placeholder="your@email.com" />
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500" placeholder="your@email.com" />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
               <div className="relative">
                 <input type={showPassword ? 'text' : 'password'} value={newAccount.password}
                   onChange={e => setNewAccount(p => ({ ...p, password: e.target.value }))}
-                  className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500"
-                  placeholder="••••••••" />
-                <button onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                  className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500" placeholder="••••••••" />
+                <button onClick={() => setShowPassword(!showPassword)} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
             </div>
           </div>
           <div className="mt-4 flex gap-2">
-            <button className="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 text-sm font-medium">
-              Save Account
+            <button onClick={saveAccount} disabled={saving} className="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 text-sm font-medium disabled:opacity-50">
+              {saving ? 'Saving...' : 'Save Account'}
             </button>
-            <button onClick={() => setShowAddForm(false)} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 text-sm">
-              Cancel
-            </button>
+            <button onClick={() => setShowAddForm(false)} className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 text-sm">Cancel</button>
           </div>
         </div>
       )}
 
       {/* Accounts List */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Platform</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Username</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Used</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {accounts.map(account => (
-              <tr key={account.id} className="hover:bg-gray-50">
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="flex items-center gap-2">
-                    <Key size={16} className="text-gray-400" />
-                    <span className="font-medium text-gray-900">{account.platform}</span>
-                  </div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                  {account.username}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                    account.isActive ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
-                  }`}>
-                    {account.isActive ? <><Check size={12} /> Active</> : 'Inactive'}
-                  </span>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  {account.lastUsed || 'Never'}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <button className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded">
-                    <Trash2 size={16} />
-                  </button>
-                </td>
+      {(!accounts || accounts.length === 0) ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
+          <Key className="mx-auto mb-3 text-gray-300" size={40} />
+          <p className="text-gray-400">No accounts stored yet. Add platform credentials to enable automation.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Platform</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Username</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Used</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {accounts.map((account: any) => (
+                <tr key={account.id} className="hover:bg-gray-50">
+                  <td className="px-6 py-4">
+                    <div className="flex items-center gap-2">
+                      <Key size={16} className="text-gray-400" />
+                      <span className="font-medium text-gray-900">{account.platform.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-600">{account.username}</td>
+                  <td className="px-6 py-4">
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${account.isActive ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'}`}>
+                      {account.isActive ? <><Check size={12} /> Active</> : 'Inactive'}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-500">{account.lastUsed ? formatDistanceToNow(new Date(account.lastUsed), { addSuffix: true }) : 'Never'}</td>
+                  <td className="px-6 py-4">
+                    <button onClick={() => deleteAccount(account.id)} className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded"><Trash2 size={16} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
