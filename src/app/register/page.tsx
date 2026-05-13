@@ -50,7 +50,7 @@ export default function RegisterPage() {
         <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-2 mb-2">
             <Rocket className="text-brand-600" size={32} />
-            <h1 className="text-2xl font-bold text-gray-900">Launch Pilot</h1>
+            <h1 className="text-2xl font-bold text-gray-900">SparkBill</h1>
           </div>
           <p className="text-gray-500">Create your account</p>
         </div>

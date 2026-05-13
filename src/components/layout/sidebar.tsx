@@ -32,7 +32,7 @@ export function Sidebar() {
       {/* Logo */}
       <div className="flex items-center gap-3 px-4 py-5 border-b border-gray-800">
         <Rocket className="text-brand-400 flex-shrink-0" size={28} />
-        {!collapsed && <span className="text-lg font-bold tracking-tight">Launch Pilot</span>}
+        {!collapsed && <span className="text-lg font-bold tracking-tight">SparkBill</span>}
       </div>
 
       {/* Navigation */}
