@@ -8,13 +8,12 @@ FROM mcr.microsoft.com/playwright:v1.44.0-jammy
 
 WORKDIR /app
 
-# Install Node.js dependencies
+# Copy Prisma schema first (needed by postinstall)
 COPY package.json package-lock.json* ./
-RUN npm ci --include=dev
-
-# Copy Prisma schema and generate client
 COPY prisma ./prisma
-RUN npx prisma generate
+
+# Install Node.js dependencies (postinstall runs prisma generate)
+RUN npm ci --include=dev
 
 # Copy source code
 COPY tsconfig.json ./
