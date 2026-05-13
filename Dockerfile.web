@@ -1,8 +1,5 @@
-# Launch Pilot - Web App Dockerfile (Next.js)
+# SparkBill - Web App Dockerfile (Next.js)
 # For deploying the dashboard if NOT using Vercel
-#
-# Build: docker build -f Dockerfile.web -t launchpilot-web .
-# Run:   docker run -p 3000:3000 --env-file .env launchpilot-web
 
 FROM node:20-slim
 
