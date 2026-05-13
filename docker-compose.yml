@@ -1,0 +1,68 @@
+# Launch Pilot - Full Stack Docker Compose
+#
+# Usage:
+#   cp .env.example .env  (edit with your values)
+#   docker compose up -d
+#
+# This runs: PostgreSQL + Web App + Automation Worker
+# The web app is at http://localhost:3000
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: launchpilot
+      POSTGRES_PASSWORD: launchpilot_secret
+      POSTGRES_DB: launchpilot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U launchpilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Next.js Web Application
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://launchpilot:launchpilot_secret@postgres:5432/launchpilot
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-in-production-use-openssl-rand}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "npx prisma db push --skip-generate && npm start"
+
+  # Automation Worker (Playwright + Chromium)
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://launchpilot:launchpilot_secret@postgres:5432/launchpilot
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      HEADLESS: "true"
+      SLOW_MO: "50"
+      DEFAULT_TIMEOUT: "30000"
+      TWO_CAPTCHA_API_KEY: ${TWO_CAPTCHA_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Give the worker enough shared memory for Chromium
+    shm_size: '2gb'
+
+volumes:
+  postgres_data:

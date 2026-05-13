@@ -1,0 +1,26 @@
+# Launch Pilot - Web App Dockerfile (Next.js)
+# For deploying the dashboard if NOT using Vercel
+#
+# Build: docker build -f Dockerfile.web -t launchpilot-web .
+# Run:   docker run -p 3000:3000 --env-file .env launchpilot-web
+
+FROM node:20-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+# Copy Prisma schema and generate client
+COPY prisma ./prisma
+RUN npx prisma generate
+
+# Copy source and build
+COPY . .
+RUN npm run build
+
+ENV NODE_ENV=production
+EXPOSE 3000
+
+CMD ["npm", "start"]

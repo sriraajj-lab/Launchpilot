@@ -1,0 +1,35 @@
+# Launch Pilot - Render Blueprint
+#
+# Deploy with: Connect repo to Render, it auto-detects this file
+# Creates: Worker service (automation) + PostgreSQL database
+#
+# Your Vercel app connects to the same Render PostgreSQL.
+
+services:
+  # Automation Worker
+  - type: worker
+    name: launchpilot-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: oregon
+    plan: starter  # $7/mo - has enough RAM for Chromium
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: launchpilot-db
+          property: connectionString
+      - key: ENCRYPTION_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: TWO_CAPTCHA_API_KEY
+        sync: false
+      - key: HEADLESS
+        value: "true"
+      - key: NODE_ENV
+        value: production
+
+databases:
+  - name: launchpilot-db
+    plan: starter  # Free 1GB, 97 days retention
+    databaseName: launchpilot
+    user: launchpilot
+    region: oregon

@@ -1,0 +1,21 @@
+# Launch Pilot - Railway Deployment Config
+# 
+# Deploy the automation worker on Railway:
+# 1. Connect this repo to Railway
+# 2. Set DATABASE_URL (same as your Vercel DB)
+# 3. Set ENCRYPTION_KEY
+# 4. Railway auto-detects this config and deploys
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "npx tsx src/lib/queue/worker.ts"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "always"
+numReplicas = 1
+
+[service]
+internalPort = 8080
