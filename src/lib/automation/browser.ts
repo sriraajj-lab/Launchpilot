@@ -1,11 +1,14 @@
 /**
  * Launch Pilot - Browser Automation Engine
- * 
+ *
  * Core Playwright wrapper with human-like behavior simulation,
  * CAPTCHA detection, anti-bot evasion, and session management.
+ *
+ * NOTE: This module requires Playwright (devDependency).
+ * It is NOT used on Vercel — only by the separate worker process.
  */
 
-import { chromium, Browser, BrowserContext, Page, ElementHandle } from 'playwright';
+import type { Browser, BrowserContext, Page, ElementHandle } from 'playwright';
 
 export interface BrowserConfig {
   headless?: boolean;
@@ -37,6 +40,22 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
 ];
 
+/**
+ * Lazily load Playwright chromium to avoid crashing in environments
+ * where Playwright is not installed (e.g. Vercel serverless).
+ */
+async function getChromium() {
+  try {
+    const pw = await import('playwright');
+    return pw.chromium;
+  } catch {
+    throw new Error(
+      'Playwright is not available in this environment. ' +
+      'Browser automation is only supported in the worker process, not on Vercel serverless.'
+    );
+  }
+}
+
 export class AutomationBrowser {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
@@ -51,6 +70,8 @@ export class AutomationBrowser {
    * Launch browser with stealth settings
    */
   async launch(): Promise<Page> {
+    const chromium = await getChromium();
+
     this.browser = await chromium.launch({
       headless: this.config.headless,
       slowMo: this.config.slowMo,
@@ -83,12 +104,12 @@ export class AutomationBrowser {
     await this.context.addInitScript(() => {
       // Hide webdriver property
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
-      
+
       // Mock plugins
       Object.defineProperty(navigator, 'plugins', {
         get: () => [1, 2, 3, 4, 5],
       });
-      
+
       // Mock languages
       Object.defineProperty(navigator, 'languages', {
         get: () => ['en-US', 'en'],

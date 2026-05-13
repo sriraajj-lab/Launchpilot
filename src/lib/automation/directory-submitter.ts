@@ -7,7 +7,7 @@
 
 import { AutomationBrowser, createBrowser } from './browser';
 import { PlatformConfig, PlatformField, getPlatformById } from '../platforms/registry';
-import { Page } from 'playwright';
+import type { Page } from 'playwright';
 
 export interface ProductData {
   name: string;
@@ -78,9 +78,14 @@ export class DirectorySubmitter {
         const loginResult = await this.loginToPlatform(platform, credentials);
         if (!loginResult.success) {
           return {
-            ...loginResult,
             platformId: platform.id,
             platformName: platform.name,
+            success: false,
+            error: loginResult.error,
+            needsCaptcha: loginResult.needsCaptcha,
+            needsManualAction: loginResult.needsManualAction,
+            manualActionDescription: loginResult.manualActionDescription,
+            screenshotPath: loginResult.screenshotPath,
             timestamp: new Date(),
           };
         }
@@ -118,7 +123,12 @@ export class DirectorySubmitter {
       return {
         platformId: platform.id,
         platformName: platform.name,
-        ...submitResult,
+        success: submitResult.success ?? false,
+        submittedUrl: submitResult.submittedUrl,
+        needsCaptcha: submitResult.needsCaptcha,
+        needsManualAction: submitResult.needsManualAction,
+        manualActionDescription: submitResult.manualActionDescription,
+        screenshotPath: submitResult.screenshotPath,
         timestamp: new Date(),
       };
     } catch (error: any) {

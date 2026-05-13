@@ -1,12 +1,15 @@
 /**
  * Launch Pilot - Server-Side Automation Engine
- * 
+ *
  * Runs browser automation on the server (in a worker process).
  * Handles platform submissions with proper error handling and screenshots.
  * Designed for web deployment - runs headless with no user interaction.
+ *
+ * NOTE: This module requires Playwright (devDependency).
+ * It is NOT used on Vercel — only by the separate worker process.
  */
 
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
 import { getPlatformById, PlatformConfig } from '../platforms/registry';
 
 export interface ProductSubmitData {
@@ -36,6 +39,22 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
 ];
+
+/**
+ * Lazily load Playwright chromium to avoid crashing in environments
+ * where Playwright is not installed (e.g. Vercel serverless).
+ */
+async function getChromium() {
+  try {
+    const pw = await import('playwright');
+    return pw.chromium;
+  } catch {
+    throw new Error(
+      'Playwright is not available in this environment. ' +
+      'Browser automation is only supported in the worker process, not on Vercel serverless.'
+    );
+  }
+}
 
 export class ServerAutomationEngine {
   private browser: Browser | null = null;
@@ -118,6 +137,8 @@ export class ServerAutomationEngine {
    * Launch headless browser with stealth settings
    */
   private async launchBrowser(): Promise<void> {
+    const chromium = await getChromium();
+
     this.browser = await chromium.launch({
       headless: true,
       args: [

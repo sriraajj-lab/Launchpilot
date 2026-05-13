@@ -23,6 +23,7 @@ export const authOptions: NextAuthOptions = {
   },
   pages: {
     signIn: '/login',
+    // @ts-expect-error signUp is not in PagesOptions type but is supported at runtime
     signUp: '/register',
   },
   providers: [

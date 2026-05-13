@@ -207,7 +207,7 @@ function generateSEOKeywords(input: BlogInput): string[] {
     ...base,
   ];
 
-  return [...new Set(generated)].slice(0, 10);
+  return Array.from(new Set(generated)).slice(0, 10);
 }
 
 /**

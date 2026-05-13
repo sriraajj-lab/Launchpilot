@@ -109,9 +109,9 @@ function generateTwitterLaunch(product: ProductInfo): GeneratedContent {
 
 Introducing ${product.name} 🚀
 
-${product.tagline || extractTagline(product.description)}
+${extractTagline(product.description)}
 
-${extractThreeFeatures(product.description)}
+${extractCoreBenefit(product.description)}
 
 Try it free → ${product.url}
 
@@ -469,7 +469,7 @@ function bulletPoints(description: string): string {
   if (points.length < 2) {
     // Generate from keywords
     const words = description.split(' ').filter(w => w.length > 4);
-    const uniqueTopics = [...new Set(words)].slice(0, 4);
+    const uniqueTopics = Array.from(new Set(words)).slice(0, 4);
     return uniqueTopics.map(w => `• ${w.charAt(0).toUpperCase() + w.slice(1)}-powered solution`).join('\n');
   }
   

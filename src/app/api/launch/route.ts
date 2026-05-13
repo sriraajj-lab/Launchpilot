@@ -142,7 +142,7 @@ function extractKeywords(name: string, description: string): string {
   }
 
   // Get top keywords by frequency
-  const sorted = [...freq.entries()].sort((a, b) => b[1] - a[1]);
+  const sorted = Array.from(freq.entries()).sort((a, b) => b[1] - a[1]);
   const topKeywords = sorted.slice(0, 8).map(([word]) => word);
 
   return topKeywords.join(', ');

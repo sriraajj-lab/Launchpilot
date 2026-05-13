@@ -6,7 +6,7 @@
  */
 
 import { AutomationBrowser, createBrowser } from './browser';
-import { Page } from 'playwright';
+import type { Page } from 'playwright';
 
 export interface TwitterProfileData {
   displayName: string;

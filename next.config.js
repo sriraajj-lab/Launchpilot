@@ -1,9 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
-    serverComponentsExternalPackages: ['playwright', 'bcryptjs'],
+    serverComponentsExternalPackages: ['bcryptjs'],
   },
-  // Playwright runs on server only - exclude from client bundles
+  // Exclude server-only modules from client bundles
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {
