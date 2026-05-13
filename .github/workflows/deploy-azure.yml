@@ -1,0 +1,79 @@
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  ACR_NAME: acrlp8191
+  RESOURCE_GROUP: rg-launchpilot
+  WEB_APP: lp-web
+  WORKER_APP: lp-worker
+  CONTAINER_ENV: aca-env-lp
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to ACR
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build and push web image
+        run: |
+          az acr build \
+            --registry ${{ env.ACR_NAME }} \
+            --image launchpilot-web:latest \
+            --image launchpilot-web:${{ github.sha }} \
+            --file Dockerfile.web \
+            .
+
+      - name: Build and push worker image
+        run: |
+          az acr build \
+            --registry ${{ env.ACR_NAME }} \
+            --image launchpilot-worker:latest \
+            --image launchpilot-worker:${{ github.sha }} \
+            --file Dockerfile \
+            .
+
+      - name: Update web container app
+        run: |
+          az containerapp update \
+            --name ${{ env.WEB_APP }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/launchpilot-worker:${{ github.sha }} \
+            --set-env-vars "NODE_ENV=production"
+
+      - name: Update worker container app
+        run: |
+          az containerapp update \
+            --name ${{ env.WORKER_APP }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/launchpilot-worker:${{ github.sha }} \
+            --set-env-vars "NODE_ENV=production HEADLESS=true"
+
+      - name: Run database migrations
+        run: |
+          npm install
+          npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Health check
+        run: |
+          sleep 30
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://lp-web.jollyhill-e873fff9.eastus2.azurecontainerapps.io)
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check failed with status $STATUS"
+            exit 1
+          fi
+          echo "Health check passed!"
