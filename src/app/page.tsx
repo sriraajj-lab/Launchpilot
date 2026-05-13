@@ -1,162 +1,242 @@
 'use client';
 
-import { Rocket, Globe, Send, CheckCircle, AlertCircle, Clock, Activity, Loader2 } from 'lucide-react';
-import { useDashboard } from '@/lib/hooks';
-import { formatDistanceToNow } from 'date-fns';
+import { useState } from 'react';
+import { Rocket, Loader2, ExternalLink, CheckCircle, XCircle, AlertCircle, Clock } from 'lucide-react';
+import { useSession } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 
-export default function Dashboard() {
-  const { data, isLoading, error } = useDashboard();
+export default function Home() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
+  const [url, setUrl] = useState('');
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [launching, setLaunching] = useState(false);
+  const [results, setResults] = useState<any>(null);
+  const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="animate-spin text-brand-600" size={32} />
-      </div>
-    );
+  if (status === 'loading') {
+    return <div className="flex items-center justify-center min-h-[60vh]"><Loader2 className="animate-spin text-brand-600" size={32} /></div>;
   }
 
-  const stats = data?.stats || {
-    totalProducts: 0,
-    totalCampaigns: 0,
-    activeCampaigns: 0,
-    totalSubmissions: 0,
-    successfulSubmissions: 0,
-    failedSubmissions: 0,
-    pendingManual: 0,
-    socialPages: 0,
-    accounts: 0,
+  if (!session) {
+    router.push('/login');
+    return null;
+  }
+
+  const handleLaunch = async () => {
+    if (!url || !name || !description) {
+      toast.error('Please fill in all fields');
+      return;
+    }
+
+    setLaunching(true);
+    setResults(null);
+
+    try {
+      const res = await fetch('/api/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, name, description }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      toast.success('Launch started! Submissions are being processed...');
+      setResults(data);
+
+      // Start polling for status updates
+      const interval = setInterval(async () => {
+        const statusRes = await fetch(`/api/launch/${data.campaignId}`);
+        if (statusRes.ok) {
+          const statusData = await statusRes.json();
+          setResults((prev: any) => ({ ...prev, ...statusData }));
+          // Stop polling when all done
+          if (statusData.status === 'completed') {
+            clearInterval(interval);
+            setPollInterval(null);
+          }
+        }
+      }, 3000);
+      setPollInterval(interval);
+
+    } catch (error: any) {
+      toast.error(error.message);
+    } finally {
+      setLaunching(false);
+    }
   };
 
-  const recentActivity = data?.recentActivity || [];
+  const resetForm = () => {
+    if (pollInterval) clearInterval(pollInterval);
+    setPollInterval(null);
+    setResults(null);
+    setUrl('');
+    setName('');
+    setDescription('');
+  };
 
   return (
-    <div className="space-y-8">
+    <div className="max-w-3xl mx-auto py-8 space-y-8">
       {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
-          <Rocket className="text-brand-600" size={32} />
-          Launch Pilot
-        </h1>
-        <p className="text-gray-500 mt-1">Your marketing launch automation dashboard</p>
-      </div>
-
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          title="Active Campaigns"
-          value={stats.activeCampaigns}
-          subtitle={`${stats.totalCampaigns} total`}
-          icon={<Activity className="text-brand-600" size={24} />}
-          color="blue"
-        />
-        <StatCard
-          title="Successful"
-          value={stats.successfulSubmissions}
-          subtitle={`of ${stats.totalSubmissions} submissions`}
-          icon={<CheckCircle className="text-green-600" size={24} />}
-          color="green"
-        />
-        <StatCard
-          title="Needs Attention"
-          value={stats.pendingManual}
-          subtitle="manual action required"
-          icon={<AlertCircle className="text-amber-600" size={24} />}
-          color="amber"
-        />
-        <StatCard
-          title="Social Pages"
-          value={stats.socialPages}
-          subtitle="created across platforms"
-          icon={<Globe className="text-purple-600" size={24} />}
-          color="purple"
-        />
-      </div>
-
-      {/* Recent Activity */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="text-lg font-semibold text-gray-900">Recent Activity</h2>
+      <div className="text-center">
+        <div className="flex items-center justify-center gap-3 mb-3">
+          <Rocket className="text-brand-600" size={40} />
+          <h1 className="text-4xl font-bold text-gray-900">Launch Pilot</h1>
         </div>
-        {recentActivity.length === 0 ? (
-          <div className="px-6 py-12 text-center text-gray-400">
-            <Rocket className="mx-auto mb-3 opacity-30" size={40} />
-            <p>No activity yet. Create your first campaign to get started!</p>
+        <p className="text-lg text-gray-500">
+          Paste your link, describe your tool, and we'll submit it everywhere.
+        </p>
+      </div>
+
+      {/* The ONE form */}
+      {!results ? (
+        <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-8 space-y-6">
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Your Tool's URL *</label>
+            <input
+              type="url"
+              value={url}
+              onChange={e => setUrl(e.target.value)}
+              className="w-full px-4 py-3 text-lg border border-gray-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+              placeholder="https://mytool.com"
+            />
           </div>
-        ) : (
-          <div className="divide-y divide-gray-100">
-            {recentActivity.slice(0, 10).map((activity: any, i: number) => (
-              <div key={i} className="px-6 py-4 flex items-center justify-between hover:bg-gray-50">
-                <div className="flex items-center gap-3">
-                  <StatusBadge status={activity.status} />
-                  <div>
-                    <p className="font-medium text-gray-900">{activity.platformName}</p>
-                    <p className="text-sm text-gray-500">{activity.campaign?.product?.name}</p>
+
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Tool Name *</label>
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              className="w-full px-4 py-3 text-lg border border-gray-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+              placeholder="My Awesome Tool"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-2">Description *</label>
+            <textarea
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              className="w-full px-4 py-3 text-lg border border-gray-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500 h-32 resize-none"
+              placeholder="Describe what your tool does in 2-3 sentences. This will be used across all platforms."
+            />
+            <p className="text-xs text-gray-400 mt-1">We'll auto-generate taglines, posts, and descriptions for each platform from this.</p>
+          </div>
+
+          <button
+            onClick={handleLaunch}
+            disabled={launching || !url || !name || !description}
+            className="w-full py-4 bg-brand-600 text-white text-lg font-semibold rounded-xl hover:bg-brand-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3"
+          >
+            {launching ? (
+              <><Loader2 size={22} className="animate-spin" /> Launching...</>
+            ) : (
+              <><Rocket size={22} /> Launch to 20+ Platforms</>
+            )}
+          </button>
+
+          <p className="text-center text-sm text-gray-400">
+            Submits to Product Hunt, BetaList, Indie Hackers, SaaSHub, Hacker News, Reddit, and 15+ more directories automatically.
+          </p>
+        </div>
+      ) : (
+        /* Results / Progress View */
+        <div className="space-y-6">
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">{name}</h2>
+                <a href={url} target="_blank" rel="noopener noreferrer" className="text-sm text-brand-600 flex items-center gap-1">
+                  {url} <ExternalLink size={12} />
+                </a>
+              </div>
+              <CampaignStatusBadge status={results.status || 'running'} />
+            </div>
+
+            {/* Stats */}
+            <div className="grid grid-cols-4 gap-3 mb-6">
+              <MiniStat label="Total" value={results.submissions?.length || 0} />
+              <MiniStat label="Success" value={results.submissions?.filter((s: any) => s.status === 'success').length || 0} color="green" />
+              <MiniStat label="Pending" value={results.submissions?.filter((s: any) => ['pending', 'queued', 'running'].includes(s.status)).length || 0} color="blue" />
+              <MiniStat label="Issues" value={results.submissions?.filter((s: any) => ['failed', 'captcha_needed', 'manual_needed'].includes(s.status)).length || 0} color="red" />
+            </div>
+
+            {/* Submission List */}
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {results.submissions?.map((sub: any) => (
+                <div key={sub.id} className="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50">
+                  <div className="flex items-center gap-2">
+                    <SubmissionIcon status={sub.status} />
+                    <span className="text-sm font-medium text-gray-800">{sub.platformName}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {sub.resultUrl && (
+                      <a href={sub.resultUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-600 hover:underline">
+                        View
+                      </a>
+                    )}
+                    <SubmissionStatusText status={sub.status} />
                   </div>
                 </div>
-                <span className="text-sm text-gray-400">
-                  {activity.updatedAt ? formatDistanceToNow(new Date(activity.updatedAt), { addSuffix: true }) : ''}
-                </span>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        )}
-      </div>
 
-      {/* Quick Actions */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <QuickAction title="New Campaign" description="Launch a new product across 25+ platforms" href="/campaigns/new" icon={<Rocket size={20} />} />
-        <QuickAction title="Create Social Pages" description="Set up LinkedIn, Facebook, Instagram, Twitter" href="/social-pages" icon={<Globe size={20} />} />
-        <QuickAction title="Quick Submit" description="Submit to all automated directories instantly" href="/quick-submit" icon={<Send size={20} />} />
-      </div>
+          <button onClick={resetForm} className="w-full py-3 border border-gray-300 rounded-xl text-gray-700 hover:bg-gray-50 font-medium">
+            Launch Another Tool
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function StatCard({ title, value, subtitle, icon, color }: {
-  title: string; value: number; subtitle: string; icon: React.ReactNode; color: string;
-}) {
-  const colorClasses: Record<string, string> = {
-    blue: 'bg-blue-50 border-blue-100',
-    green: 'bg-green-50 border-green-100',
-    amber: 'bg-amber-50 border-amber-100',
-    purple: 'bg-purple-50 border-purple-100',
+function MiniStat({ label, value, color }: { label: string; value: number; color?: string }) {
+  const colors: Record<string, string> = {
+    green: 'text-green-600',
+    blue: 'text-blue-600',
+    red: 'text-red-600',
   };
   return (
-    <div className={`rounded-xl p-5 border ${colorClasses[color] || 'bg-gray-50 border-gray-100'}`}>
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-sm font-medium text-gray-600">{title}</span>
-        {icon}
-      </div>
-      <p className="text-3xl font-bold text-gray-900">{value}</p>
-      <p className="text-sm text-gray-500 mt-1">{subtitle}</p>
+    <div className="text-center p-2 bg-gray-50 rounded-lg">
+      <p className={`text-2xl font-bold ${colors[color || ''] || 'text-gray-900'}`}>{value}</p>
+      <p className="text-xs text-gray-500">{label}</p>
     </div>
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const config: Record<string, { color: string; label: string }> = {
-    success: { color: 'bg-green-100 text-green-800', label: 'Success' },
-    failed: { color: 'bg-red-100 text-red-800', label: 'Failed' },
-    manual_needed: { color: 'bg-amber-100 text-amber-800', label: 'Manual' },
-    captcha_needed: { color: 'bg-orange-100 text-orange-800', label: 'CAPTCHA' },
-    running: { color: 'bg-blue-100 text-blue-800', label: 'Running' },
-    queued: { color: 'bg-indigo-100 text-indigo-800', label: 'Queued' },
-    pending: { color: 'bg-gray-100 text-gray-800', label: 'Pending' },
-  };
-  const { color, label } = config[status] || config.pending;
-  return <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${color}`}>{label}</span>;
+function SubmissionIcon({ status }: { status: string }) {
+  if (status === 'success') return <CheckCircle size={16} className="text-green-500" />;
+  if (status === 'failed') return <XCircle size={16} className="text-red-500" />;
+  if (status === 'captcha_needed' || status === 'manual_needed') return <AlertCircle size={16} className="text-amber-500" />;
+  if (status === 'running') return <Loader2 size={16} className="text-blue-500 animate-spin" />;
+  return <Clock size={16} className="text-gray-400" />;
 }
 
-function QuickAction({ title, description, href, icon }: {
-  title: string; description: string; href: string; icon: React.ReactNode;
-}) {
-  return (
-    <a href={href} className="block p-5 bg-white rounded-xl border border-gray-200 hover:border-brand-300 hover:shadow-md transition-all group">
-      <div className="flex items-center gap-2 text-brand-600 mb-2 group-hover:text-brand-700">
-        {icon}
-        <h3 className="font-semibold">{title}</h3>
-      </div>
-      <p className="text-sm text-gray-500">{description}</p>
-    </a>
-  );
+function SubmissionStatusText({ status }: { status: string }) {
+  const map: Record<string, { text: string; color: string }> = {
+    pending: { text: 'Queued', color: 'text-gray-400' },
+    queued: { text: 'Queued', color: 'text-gray-400' },
+    running: { text: 'Submitting...', color: 'text-blue-600' },
+    success: { text: 'Done', color: 'text-green-600' },
+    failed: { text: 'Failed', color: 'text-red-600' },
+    captcha_needed: { text: 'CAPTCHA', color: 'text-amber-600' },
+    manual_needed: { text: 'Manual', color: 'text-amber-600' },
+  };
+  const { text, color } = map[status] || { text: status, color: 'text-gray-500' };
+  return <span className={`text-xs font-medium ${color}`}>{text}</span>;
+}
+
+function CampaignStatusBadge({ status }: { status: string }) {
+  const map: Record<string, { text: string; color: string }> = {
+    running: { text: 'Running', color: 'bg-blue-100 text-blue-800' },
+    completed: { text: 'Complete', color: 'bg-green-100 text-green-800' },
+    failed: { text: 'Failed', color: 'bg-red-100 text-red-800' },
+  };
+  const { text, color } = map[status] || { text: 'In Progress', color: 'bg-blue-100 text-blue-800' };
+  return <span className={`px-3 py-1 rounded-full text-xs font-medium ${color}`}>{text}</span>;
 }
