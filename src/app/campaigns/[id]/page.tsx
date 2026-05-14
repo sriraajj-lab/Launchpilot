@@ -2,7 +2,7 @@
 
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import {
   ArrowLeft, Play, CheckCircle, XCircle, Clock, AlertTriangle,
   Loader2, ExternalLink, RotateCcw, Globe, Zap, Shield, LogIn,
@@ -28,7 +28,7 @@ export default function CampaignDetailPage() {
       (s: any) => ['captcha_needed', 'manual_needed'].includes(s.status)
     );
 
-    const currentActionIds = new Set(currentActionSubs.map((s: any) => s.id));
+    const currentActionIds: Set<string> = new Set(currentActionSubs.map((s: any) => s.id as string));
 
     // Find newly action-required submissions (weren't in previous poll)
     const newAlerts = currentActionSubs.filter(
