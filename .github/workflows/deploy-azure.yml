@@ -51,15 +51,26 @@ jobs:
             --name ${{ env.WEB_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --image ${{ env.ACR_NAME }}.azurecr.io/launchpilot-web:${{ github.sha }} \
-            --set-env-vars "NODE_ENV=production"
+            --set-env-vars "NODE_ENV=production" "NEXT_PUBLIC_VNC_URL=https://lp-worker.jollyhill-e873fff9.eastus2.azurecontainerapps.io"
 
-      - name: Update worker container app
+      - name: Update worker container app with VNC port
         run: |
+          # First, try to add the VNC ingress port if not already configured
+          az containerapp ingress update \
+            --name ${{ env.WORKER_APP }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --target-port 6080 \
+            --transport http \
+            --type external \
+            --allow-insecure true \
+            2>/dev/null || echo "Ingress update attempted (may already be configured)"
+
+          # Update the container image and environment
           az containerapp update \
             --name ${{ env.WORKER_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --image ${{ env.ACR_NAME }}.azurecr.io/launchpilot-worker:${{ github.sha }} \
-            --set-env-vars "NODE_ENV=production HEADLESS=true"
+            --set-env-vars "NODE_ENV=production" "HEADLESS=false" "VNC_ENABLED=true" "DISPLAY=:99" "SCREEN_WIDTH=1280" "SCREEN_HEIGHT=720" "SCREEN_DEPTH=24"
 
       - name: Run database migrations
         run: |
@@ -78,3 +89,14 @@ jobs:
             exit 1
           fi
           echo "Health check passed!"
+
+      - name: VNC check
+        run: |
+          sleep 10
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://lp-worker.jollyhill-e873fff9.eastus2.azurecontainerapps.io/vnc.html || echo "000")
+          echo "Worker VNC endpoint status: $STATUS"
+          if [ "$STATUS" = "200" ]; then
+            echo "VNC endpoint is accessible ✓"
+          else
+            echo "VNC endpoint not yet available (status: $STATUS). May need manual ingress configuration."
+          fi

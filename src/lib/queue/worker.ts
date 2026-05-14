@@ -1,26 +1,23 @@
 /**
- * Launch Pilot - Job Queue Worker (Production-Ready)
- * 
- * Background worker that processes automation jobs autonomously.
- * Run separately with: npm run worker
- * 
+ * Launch Pilot - Job Queue Worker (v2 - Interactive)
+ *
+ * Background worker that processes automation jobs.
+ * When CAPTCHA/login is detected, the engine pauses and waits
+ * for the user to complete the action via the embedded VNC browser.
+ *
  * Features:
  * - Polls DB for queued jobs
- * - Processes sequentially (one browser at a time)
+ * - Passes submissionId to engine for pause/resume signaling
  * - Retries with exponential backoff
  * - Heartbeat file for Docker health checks
  * - Graceful shutdown on SIGINT/SIGTERM
- * - Stale job recovery (jobs stuck in 'running' > 10 min)
- * - Campaign completion detection
- * - 2Captcha integration when CAPTCHA detected
+ * - Stale job recovery
  */
 
 import { PrismaClient } from '@prisma/client';
 import { ServerAutomationEngine } from '../automation/server-engine';
-import { solveCaptcha } from '../captcha-solver';
 import fs from 'fs';
 
-// Create a dedicated Prisma client for the worker (not shared with Next.js)
 const prisma = new PrismaClient();
 
 interface SubmissionJobData {
@@ -44,11 +41,11 @@ interface SubmissionJobData {
 }
 
 // === CONFIG ===
-const POLL_INTERVAL = 5000; // 5 seconds
-const MAX_CONCURRENT = 1; // One browser at a time to avoid resource issues
-const STALE_JOB_TIMEOUT_MIN = 10; // Jobs running > 10 min are considered stale
+const POLL_INTERVAL = 5000;
+const MAX_CONCURRENT = 1;
+const STALE_JOB_TIMEOUT_MIN = 15; // Increased from 10 because user actions may take time
 const HEARTBEAT_FILE = '/tmp/worker-heartbeat';
-const DELAY_BETWEEN_JOBS_MS = 3000; // 3 second cooldown between jobs
+const DELAY_BETWEEN_JOBS_MS = 3000;
 
 let isRunning = false;
 let activeJobs = 0;
@@ -59,10 +56,12 @@ let errorCount = 0;
 
 async function startWorker() {
   console.log('╔══════════════════════════════════════════╗');
-  console.log('║    LAUNCH PILOT WORKER - AUTONOMOUS     ║');
+  console.log('║    LAUNCH PILOT WORKER - INTERACTIVE    ║');
   console.log('╚══════════════════════════════════════════╝');
   console.log(`[Config] Poll interval: ${POLL_INTERVAL}ms`);
   console.log(`[Config] Max concurrent: ${MAX_CONCURRENT}`);
+  console.log(`[Config] Headless: ${process.env.HEADLESS || 'true'}`);
+  console.log(`[Config] VNC: ${process.env.VNC_ENABLED === 'true' ? 'ENABLED' : 'DISABLED'}`);
   console.log(`[Config] 2Captcha: ${process.env.TWO_CAPTCHA_API_KEY ? 'ENABLED' : 'DISABLED'}`);
   console.log(`[Config] Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log('');
@@ -88,28 +87,22 @@ async function startWorker() {
       if (activeJobs < MAX_CONCURRENT) {
         const processed = await processNextJob();
         if (processed) {
-          // Small cooldown between jobs to avoid hammering
           await sleep(DELAY_BETWEEN_JOBS_MS);
         }
       }
     } catch (error: any) {
       errorCount++;
       console.error('[Worker] Error in poll loop:', error.message);
-      // Don't crash - just continue after a longer wait
       await sleep(10000);
     }
 
     await sleep(POLL_INTERVAL);
   }
 
-  // Cleanup
   await prisma.$disconnect();
   console.log('[Worker] Shut down complete.');
 }
 
-/**
- * Recover jobs that were 'running' when worker crashed
- */
 async function recoverStaleJobs() {
   const staleThreshold = new Date(Date.now() - STALE_JOB_TIMEOUT_MIN * 60 * 1000);
 
@@ -128,6 +121,22 @@ async function recoverStaleJobs() {
     console.log(`[Recovery] Re-queued ${staleJobs.count} stale jobs`);
   }
 
+  // Reset submissions that were waiting for user action (they'll be re-processed)
+  const staleActionSubmissions = await prisma.submission.updateMany({
+    where: {
+      status: { in: ['captcha_needed', 'manual_needed'] },
+      lastAttempt: { lt: staleThreshold },
+    },
+    data: {
+      status: 'pending',
+      userSignal: null,
+    },
+  });
+
+  if (staleActionSubmissions.count > 0) {
+    console.log(`[Recovery] Reset ${staleActionSubmissions.count} stale action-required submissions`);
+  }
+
   // Also recover submissions stuck in 'running'
   const staleSubmissions = await prisma.submission.updateMany({
     where: {
@@ -140,15 +149,11 @@ async function recoverStaleJobs() {
   });
 
   if (staleSubmissions.count > 0) {
-    console.log(`[Recovery] Reset ${staleSubmissions.count} stale submissions`);
+    console.log(`[Recovery] Reset ${staleSubmissions.count} stale running submissions`);
   }
 }
 
-/**
- * Pick up and process the next queued job
- */
 async function processNextJob(): Promise<boolean> {
-  // Find the next queued job that's ready to run
   const job = await prisma.job.findFirst({
     where: {
       status: 'queued',
@@ -169,7 +174,6 @@ async function processNextJob(): Promise<boolean> {
   const startTime = Date.now();
   console.log(`\n[Job ${job.id.slice(-6)}] Starting: ${job.type} (attempt ${job.retries + 1}/${job.maxRetries})`);
 
-  // Mark as running
   await prisma.job.update({
     where: { id: job.id },
     data: { status: 'running', startedAt: new Date() },
@@ -187,7 +191,6 @@ async function processNextJob(): Promise<boolean> {
         });
         break;
       case 'social_page_creation':
-        // TODO: Implement social page creation
         await prisma.job.update({
           where: { id: job.id },
           data: { status: 'completed', completedAt: new Date() },
@@ -206,7 +209,6 @@ async function processNextJob(): Promise<boolean> {
 
     const retries = job.retries + 1;
     if (retries < job.maxRetries) {
-      // Exponential backoff: 1min, 2min, 4min, 8min...
       const backoffMs = Math.min(retries * 60 * 1000 * Math.pow(2, retries - 1), 30 * 60 * 1000);
       console.log(`[Job ${job.id.slice(-6)}] Retry ${retries}/${job.maxRetries} in ${Math.round(backoffMs / 1000)}s`);
 
@@ -226,7 +228,6 @@ async function processNextJob(): Promise<boolean> {
         data: { status: 'failed', error: error.message, completedAt: new Date() },
       });
 
-      // Also mark the submission as failed
       if (job.submissionId) {
         await prisma.submission.update({
           where: { id: job.submissionId },
@@ -241,16 +242,13 @@ async function processNextJob(): Promise<boolean> {
   return true;
 }
 
-/**
- * Process a single platform submission
- */
 async function processSubmissionJob(job: any) {
   const data: SubmissionJobData = JSON.parse(job.payload);
 
   // Update submission status to running
   await prisma.submission.update({
     where: { id: data.submissionId },
-    data: { status: 'running', attempts: { increment: 1 }, lastAttempt: new Date() },
+    data: { status: 'running', attempts: { increment: 1 }, lastAttempt: new Date(), userSignal: null },
   });
 
   console.log(`[Submit] ${data.platformId} -> ${data.productData.name} (${data.productData.url})`);
@@ -259,35 +257,24 @@ async function processSubmissionJob(job: any) {
   let credentials: { username: string; password: string } | undefined;
   if (data.credentials) {
     try {
-      // Dynamic import to avoid issues in environments without crypto
       const { decrypt } = await import('../encryption');
       credentials = {
         username: data.credentials.username,
         password: decrypt(data.credentials.password),
       };
     } catch {
-      // Password might not be encrypted in dev/test
       credentials = data.credentials;
     }
   }
 
-  // Run the browser automation
+  // Run the browser automation - pass submissionId for pause/resume
   const engine = new ServerAutomationEngine();
-  let result = await engine.submitToPlatform(data.platformId, data.productData, credentials);
-
-  // If CAPTCHA detected, try to solve it
-  if (result.needsCaptcha && process.env.TWO_CAPTCHA_API_KEY) {
-    console.log(`[Submit] ${data.platformId}: CAPTCHA detected, attempting auto-solve...`);
-    
-    const solved = await solveCaptcha(result.screenshotBase64 || '');
-    if (solved.success) {
-      console.log(`[Submit] ${data.platformId}: CAPTCHA solved, retrying submission...`);
-      // Retry with captcha solution - engine handles injection
-      result = await engine.submitToPlatform(data.platformId, data.productData, credentials);
-    } else {
-      console.log(`[Submit] ${data.platformId}: CAPTCHA solve failed: ${solved.error}`);
-    }
-  }
+  const result = await engine.submitToPlatform(
+    data.platformId,
+    data.productData,
+    credentials,
+    data.submissionId  // This enables the pause/resume mechanism
+  );
 
   // Determine final status
   let finalStatus: string;
@@ -310,7 +297,7 @@ async function processSubmissionJob(job: any) {
       actionUrl: result.actionUrl || null,
       actionType: result.actionType || null,
       error: result.error || result.manualActionDescription || null,
-      screenshot: result.screenshotBase64 ? result.screenshotBase64.substring(0, 5000) : null, // Truncate to save DB space
+      screenshot: result.screenshotBase64 ? result.screenshotBase64.substring(0, 5000) : null,
     },
   });
 
@@ -327,9 +314,6 @@ async function processSubmissionJob(job: any) {
   console.log(`[Submit] ${statusEmoji} ${data.platformId}: ${finalStatus}${result.submittedUrl ? ` (${result.submittedUrl})` : ''}${result.actionUrl ? ` | Action URL: ${result.actionUrl}` : ''}${result.actionType ? ` | Action: ${result.actionType}` : ''}`);
 }
 
-/**
- * Check if a campaign is fully complete and update its status
- */
 async function checkCampaignCompletion(campaignId: string) {
   const submissions = await prisma.submission.findMany({
     where: { campaignId },
@@ -353,9 +337,6 @@ async function checkCampaignCompletion(campaignId: string) {
   }
 }
 
-/**
- * Write heartbeat file for Docker health check
- */
 function writeHeartbeat() {
   try {
     fs.writeFileSync(HEARTBEAT_FILE, JSON.stringify({
@@ -365,9 +346,7 @@ function writeHeartbeat() {
       activeJobs,
       isRunning,
     }));
-  } catch {
-    // Non-critical, ignore
-  }
+  } catch {}
 }
 
 function sleep(ms: number) {
@@ -390,12 +369,10 @@ process.on('SIGTERM', () => {
 
 process.on('uncaughtException', (error) => {
   console.error('[Worker] Uncaught exception:', error);
-  // Don't crash - let the loop continue
 });
 
 process.on('unhandledRejection', (reason) => {
   console.error('[Worker] Unhandled rejection:', reason);
-  // Don't crash - let the loop continue
 });
 
 // === START ===

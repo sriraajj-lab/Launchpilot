@@ -1,15 +1,11 @@
-# SparkBill - Web App Dockerfile (Next.js)
-# For deploying the dashboard if NOT using Vercel
+# LaunchPilot - Web App Dockerfile (Next.js)
 
 FROM node:20-slim
 
-# Install openssl for Prisma compatibility (node:20-slim = Debian Bookworm with OpenSSL 3.x)
+# Install openssl for Prisma compatibility
 RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Install OpenSSL (required by Prisma query engine)
-RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
 # Copy Prisma schema first (needed by postinstall)
 COPY package.json package-lock.json* ./
@@ -20,6 +16,11 @@ RUN npm ci
 
 # Copy source and build
 COPY . .
+
+# Build-time environment variable for VNC URL
+ARG NEXT_PUBLIC_VNC_URL=https://lp-worker.jollyhill-e873fff9.eastus2.azurecontainerapps.io
+ENV NEXT_PUBLIC_VNC_URL=$NEXT_PUBLIC_VNC_URL
+
 RUN npm run build
 
 ENV NODE_ENV=production

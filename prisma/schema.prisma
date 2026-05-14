@@ -117,6 +117,7 @@ model Submission {
   resultUrl   String?   // resulting URL after submission
   actionUrl   String?   // URL the user should visit to complete CAPTCHA/login manually
   actionType  String?   // "captcha", "login", "manual_submit", "payment" - what the user needs to do
+  userSignal  String?   // "continue" - set by user to signal the worker to resume after completing action
   error       String?
   screenshot  String?   // base64 or URL to screenshot
   attempts    Int       @default(0)

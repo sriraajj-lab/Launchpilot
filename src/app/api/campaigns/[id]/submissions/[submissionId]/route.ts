@@ -40,7 +40,7 @@ export async function POST(
   }
 }
 
-// PATCH /api/campaigns/[id]/submissions/[submissionId] - Mark as done manually
+// PATCH /api/campaigns/[id]/submissions/[submissionId] - Various actions
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string; submissionId: string } }
@@ -63,7 +63,17 @@ export async function PATCH(
 
     const { action, resultUrl } = body;
 
-    if (action === 'mark_done') {
+    if (action === 'continue') {
+      // User completed the action (CAPTCHA/login) in the embedded VNC browser
+      // and wants the worker to resume automation
+      await prisma.submission.update({
+        where: { id: params.submissionId },
+        data: {
+          userSignal: 'continue',
+        },
+      });
+      return successResponse({ success: true, action: 'continue', message: 'Signal sent to worker to continue automation' });
+    } else if (action === 'mark_done') {
       // User completed the action manually - mark as success
       await prisma.submission.update({
         where: { id: params.submissionId },
@@ -71,6 +81,7 @@ export async function PATCH(
           status: 'success',
           resultUrl: resultUrl || submission.actionUrl || null,
           error: null,
+          userSignal: null,
         },
       });
     } else if (action === 'mark_failed') {
@@ -80,10 +91,11 @@ export async function PATCH(
         data: {
           status: 'failed',
           error: body.error || 'User marked as failed after manual attempt',
+          userSignal: null,
         },
       });
     } else if (action === 'retry_after_action') {
-      // User completed the action (CAPTCHA/login) and wants the worker to retry
+      // Reset submission and queue for full retry
       await prisma.submission.update({
         where: { id: params.submissionId },
         data: {
@@ -91,13 +103,14 @@ export async function PATCH(
           error: null,
           actionUrl: null,
           actionType: null,
+          userSignal: null,
         },
       });
 
       // Queue a retry job
       await retrySubmission(submission.id, user.id);
     } else {
-      return errorResponse('Invalid action. Use: mark_done, mark_failed, or retry_after_action', 400);
+      return errorResponse('Invalid action. Use: continue, mark_done, mark_failed, or retry_after_action', 400);
     }
 
     // Check if campaign is now complete

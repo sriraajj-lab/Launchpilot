@@ -1,22 +1,27 @@
 /**
- * Launch Pilot - Server-Side Automation Engine (v2 - Fully Autonomous)
+ * Launch Pilot - Server-Side Automation Engine (v3 - Interactive)
  *
  * Runs browser automation on the server in the worker process.
- * Now uses adaptive form detection - doesn't rely solely on hardcoded selectors.
- * Falls back to intelligent DOM scanning when specific selectors fail.
+ * When CAPTCHA/login/security challenges are detected, the engine
+ * keeps the browser page open and waits for the user to complete
+ * the action via the embedded VNC viewer. The user can interact
+ * with the actual browser session, and when they signal "continue",
+ * the engine resumes the automation.
  *
- * Key improvements over v1:
+ * Key features:
+ * - Headed mode with VNC for interactive CAPTCHA/login resolution
  * - Adaptive form filling (finds inputs by label, placeholder, type)
- * - Multiple submit button strategies
- * - Better error recovery
+ * - Pause/resume with userSignal polling
  * - Cookie consent auto-dismissal
  * - Popup/modal auto-close
  * - Wait strategies for dynamic pages
- * - 2Captcha integration hook
  */
 
 import type { Browser, BrowserContext, Page, ElementHandle } from 'playwright';
 import { getPlatformById, PlatformConfig, PlatformField } from '../platforms/registry';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 export interface ProductSubmitData {
   name: string;
@@ -37,9 +42,9 @@ export interface AutomationResult {
   needsCaptcha?: boolean;
   needsManualAction?: boolean;
   manualActionDescription?: string;
-  pageHtml?: string; // For captcha siteKey extraction
-  actionUrl?: string;  // URL the user should visit to complete action
-  actionType?: 'captcha' | 'login' | 'manual_submit' | 'payment' | 'security_challenge'; // What the user needs to do
+  pageHtml?: string;
+  actionUrl?: string;
+  actionType?: 'captcha' | 'login' | 'manual_submit' | 'payment' | 'security_challenge';
 }
 
 const USER_AGENTS = [
@@ -48,6 +53,11 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
 ];
+
+// How long to wait for user action before giving up (10 minutes)
+const USER_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
+// How often to poll the database for userSignal (3 seconds)
+const USER_SIGNAL_POLL_INTERVAL_MS = 3000;
 
 async function getChromium() {
   const pw = await import('playwright');
@@ -58,16 +68,20 @@ export class ServerAutomationEngine {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  private submissionId: string | null = null;
 
   async submitToPlatform(
     platformId: string,
     product: ProductSubmitData,
-    credentials?: { username: string; password: string }
+    credentials?: { username: string; password: string },
+    submissionId?: string
   ): Promise<AutomationResult> {
     const platform = getPlatformById(platformId);
     if (!platform) {
       return { success: false, error: `Platform "${platformId}" not found` };
     }
+
+    this.submissionId = submissionId || null;
 
     try {
       await this.launchBrowser();
@@ -79,34 +93,41 @@ export class ServerAutomationEngine {
       if (platform.loginRequired && credentials) {
         const loginOk = await this.loginToPlatform(platform, credentials);
         if (!loginOk.success) {
-          // If login failed due to CAPTCHA or other issue, provide the login URL
+          // If login failed due to CAPTCHA, wait for user to complete it
           if (loginOk.needsCaptcha || loginOk.needsManualAction) {
+            const waitResult = await this.waitForUserAction(
+              loginOk.actionUrl || `${platform.url}/login`,
+              loginOk.needsCaptcha ? 'captcha' : 'login',
+              `${platform.name} login requires your help. Complete the action in the browser panel on the right.`
+            );
+            if (waitResult) return waitResult;
+
+            // User completed action - try to continue from current page
+            console.log(`[Engine] User completed login action for ${platform.name}, continuing...`);
+            await this.delay(2000, 3000);
+          } else {
             return {
               ...loginOk,
               actionUrl: loginOk.actionUrl || `${platform.url}/login`,
-              actionType: loginOk.needsCaptcha ? 'captcha' : 'login',
+              actionType: 'login',
             };
           }
-          return {
-            ...loginOk,
-            actionUrl: `${platform.url}/login`,
-            actionType: 'login',
-          };
         }
         await this.delay(2000, 4000);
       }
 
-      // If login is required but no credentials provided, alert the user
+      // If login is required but no credentials provided, wait for user
       if (platform.loginRequired && !credentials) {
-        const screenshot = await this.takeScreenshot();
-        return {
-          success: false,
-          needsManualAction: true,
-          manualActionDescription: `${platform.name} requires you to log in first. Click "Open Platform" to go to the login page, sign in, then come back and click "Done, Continue".`,
-          actionUrl: platform.url,
-          actionType: 'login',
-          screenshotBase64: screenshot,
-        };
+        const waitResult = await this.waitForUserAction(
+          platform.url,
+          'login',
+          `${platform.name} requires you to log in. Use the browser panel on the right to sign in, then click "I'm Done, Continue".`
+        );
+        if (waitResult) return waitResult;
+
+        // User logged in - continue
+        console.log(`[Engine] User completed login for ${platform.name}, continuing...`);
+        await this.delay(2000, 3000);
       }
 
       // Navigate to submission page
@@ -118,14 +139,55 @@ export class ServerAutomationEngine {
 
       // Check for Cloudflare/security challenge
       const challengeResult = await this.handleSecurityChallenge(platform);
-      if (challengeResult) return challengeResult;
+      if (challengeResult) {
+        // Wait for user to complete security challenge
+        const waitResult = await this.waitForUserAction(
+          challengeResult.actionUrl || this.page!.url(),
+          'security_challenge',
+          `${platform.name} has a security challenge. Complete it in the browser panel on the right.`
+        );
+        if (waitResult) return waitResult;
+
+        console.log(`[Engine] User completed security challenge for ${platform.name}, continuing...`);
+        await this.delay(2000, 3000);
+      }
 
       // Check for CAPTCHA
       const captchaResult = await this.handleCaptcha(platform);
-      if (captchaResult) return captchaResult;
+      if (captchaResult) {
+        // Wait for user to complete CAPTCHA
+        const waitResult = await this.waitForUserAction(
+          captchaResult.actionUrl || this.page!.url(),
+          'captcha',
+          `${platform.name} has a CAPTCHA challenge. Solve it in the browser panel on the right, then click "I'm Done, Continue".`
+        );
+        if (waitResult) return waitResult;
+
+        console.log(`[Engine] User completed CAPTCHA for ${platform.name}, continuing...`);
+        await this.delay(2000, 3000);
+      }
 
       // Fill the form - try platform-specific selectors first, then adaptive
       const fillResult = await this.fillFormAdaptive(platform, product);
+      if (!fillResult.success && fillResult.needsManualAction) {
+        // Form fields not found - wait for user to fill manually
+        const waitResult = await this.waitForUserAction(
+          fillResult.actionUrl || this.page!.url(),
+          'manual_submit',
+          `Could not find form fields on ${platform.name}. Fill in the form manually in the browser panel on the right, submit it, then click "I'm Done, Continue".`
+        );
+        if (waitResult) return waitResult;
+
+        // User filled the form - check if they submitted
+        console.log(`[Engine] User completed manual fill for ${platform.name}, checking result...`);
+        const screenshot = await this.takeScreenshot();
+        const urlAfter = this.page!.url();
+        return {
+          success: true,
+          submittedUrl: urlAfter,
+          screenshotBase64: screenshot,
+        };
+      }
       if (!fillResult.success) {
         return fillResult;
       }
@@ -134,10 +196,37 @@ export class ServerAutomationEngine {
 
       // Check for CAPTCHA again (some appear after form fill)
       const captchaResult2 = await this.handleCaptcha(platform);
-      if (captchaResult2) return captchaResult2;
+      if (captchaResult2) {
+        const waitResult = await this.waitForUserAction(
+          captchaResult2.actionUrl || this.page!.url(),
+          'captcha',
+          `${platform.name} has a CAPTCHA challenge after form fill. Solve it in the browser panel, then click "I'm Done, Continue".`
+        );
+        if (waitResult) return waitResult;
+
+        console.log(`[Engine] User completed post-fill CAPTCHA for ${platform.name}, continuing...`);
+        await this.delay(2000, 3000);
+      }
 
       // Submit the form
       const submitResult = await this.submitFormAdaptive(platform);
+      if (!submitResult.success && submitResult.needsManualAction) {
+        // Submit button not found - wait for user to submit manually
+        const waitResult = await this.waitForUserAction(
+          submitResult.actionUrl || this.page!.url(),
+          'manual_submit',
+          `Form filled on ${platform.name} but submit button not found. Submit the form manually in the browser panel, then click "I'm Done, Continue".`
+        );
+        if (waitResult) return waitResult;
+
+        console.log(`[Engine] User completed manual submit for ${platform.name}`);
+        const urlAfter = this.page!.url();
+        return {
+          success: true,
+          submittedUrl: urlAfter,
+          screenshotBase64: await this.takeScreenshot(),
+        };
+      }
       return submitResult;
     } catch (error: any) {
       const screenshot = await this.takeScreenshot().catch(() => undefined);
@@ -151,12 +240,110 @@ export class ServerAutomationEngine {
     }
   }
 
+  // === PAUSE/RESUME MECHANISM ===
+
+  /**
+   * Wait for the user to complete an action in the embedded browser.
+   * Updates the submission with the action info, then polls userSignal
+   * until the user sets it to "continue" or a timeout is reached.
+   *
+   * Returns null if the user completed the action (resume automation).
+   * Returns an AutomationResult if the wait timed out or was aborted.
+   */
+  private async waitForUserAction(
+    actionUrl: string,
+    actionType: string,
+    description: string
+  ): Promise<AutomationResult | null> {
+    if (!this.submissionId) {
+      // No submission ID - can't wait for user signal, return the action info
+      return {
+        success: false,
+        needsManualAction: true,
+        needsCaptcha: actionType === 'captcha',
+        manualActionDescription: description,
+        actionUrl,
+        actionType: actionType as any,
+      };
+    }
+
+    // Update the submission with the action info so the UI shows the alert
+    await prisma.submission.update({
+      where: { id: this.submissionId },
+      data: {
+        status: actionType === 'captcha' ? 'captcha_needed' : 'manual_needed',
+        actionUrl,
+        actionType,
+        error: description,
+        userSignal: null, // Reset any previous signal
+      },
+    });
+
+    console.log(`[Engine] ⏸️  PAUSED: ${actionType} needed for submission ${this.submissionId.slice(-6)}`);
+    console.log(`[Engine] Action URL: ${actionUrl}`);
+    console.log(`[Engine] Waiting for user to complete action and signal "continue"...`);
+
+    // Poll the database for the userSignal
+    const startTime = Date.now();
+    while (Date.now() - startTime < USER_ACTION_TIMEOUT_MS) {
+      await this.delay(USER_SIGNAL_POLL_INTERVAL_MS, USER_SIGNAL_POLL_INTERVAL_MS);
+
+      const submission = await prisma.submission.findUnique({
+        where: { id: this.submissionId },
+        select: { userSignal: true },
+      });
+
+      if (submission?.userSignal === 'continue') {
+        // User signaled to continue - clear the signal
+        await prisma.submission.update({
+          where: { id: this.submissionId },
+          data: {
+            userSignal: null,
+            status: 'running',
+            actionUrl: null,
+            actionType: null,
+            error: null,
+          },
+        });
+
+        console.log(`[Engine] ▶️  RESUMED: User completed action, continuing automation...`);
+
+        // Give the page a moment to settle after user interaction
+        await this.delay(1500, 2500);
+
+        // Dismiss any overlays that may have appeared
+        await this.dismissOverlays();
+
+        return null; // Signal that user completed the action, continue automation
+      }
+    }
+
+    // Timeout - user didn't complete the action in time
+    console.log(`[Engine] ⏰ TIMEOUT: User did not complete action within ${USER_ACTION_TIMEOUT_MS / 1000}s`);
+
+    const screenshot = await this.takeScreenshot();
+    return {
+      success: false,
+      needsManualAction: true,
+      needsCaptcha: actionType === 'captcha',
+      manualActionDescription: `Timed out waiting for you to complete the ${actionType}. You can retry this submission.`,
+      actionUrl,
+      actionType: actionType as any,
+      screenshotBase64: screenshot,
+    };
+  }
+
   // === BROWSER MANAGEMENT ===
 
   private async launchBrowser(): Promise<void> {
     const chromium = await getChromium();
+
+    // Use headless mode only if HEADLESS=true (default for production with VNC)
+    // With VNC, we run headed mode on a virtual display
+    const isHeadless = process.env.HEADLESS === 'true';
+
     this.browser = await chromium.launch({
-      headless: true,
+      headless: isHeadless,
       args: [
         '--disable-blink-features=AutomationControlled',
         '--no-sandbox',
@@ -165,6 +352,9 @@ export class ServerAutomationEngine {
         '--disable-gpu',
         '--disable-web-security',
         '--disable-features=VizDisplayCompositor',
+        // For VNC headed mode - these help with display
+        '--window-size=1280,720',
+        ...(isHeadless ? [] : ['--start-maximized']),
       ],
     });
 
@@ -172,7 +362,7 @@ export class ServerAutomationEngine {
 
     this.context = await this.browser.newContext({
       userAgent,
-      viewport: { width: 1366, height: 768 },
+      viewport: { width: 1280, height: 720 },
       locale: 'en-US',
       timezoneId: 'America/New_York',
       javaScriptEnabled: true,
@@ -200,9 +390,7 @@ export class ServerAutomationEngine {
     for (let i = 0; i < 3; i++) {
       try {
         await this.page!.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        // Wait for JS-rendered content to appear
         await this.delay(2000, 4000);
-        // Try to wait for network to settle (JS frameworks loading)
         await this.page!.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
         return;
       } catch (e: any) {
@@ -214,9 +402,6 @@ export class ServerAutomationEngine {
 
   // === FORM FILLING (ADAPTIVE) ===
 
-  /**
-   * Adaptive form filling - tries specific selectors first, then smart detection
-   */
   private async fillFormAdaptive(platform: PlatformConfig, product: ProductSubmitData): Promise<AutomationResult> {
     let fieldsFilledCount = 0;
 
@@ -259,7 +444,7 @@ export class ServerAutomationEngine {
       return {
         success: false,
         needsManualAction: true,
-        manualActionDescription: `Could not find form fields on ${platform.name}. The page may require login or has changed. Click "Open Platform" to submit manually, then click "Done, Continue".`,
+        manualActionDescription: `Could not find form fields on ${platform.name}. The page may require login or has changed. Use the browser panel on the right to fill the form manually, then click "I'm Done, Continue".`,
         actionUrl: currentUrl || platform.submitUrl,
         actionType: 'manual_submit',
         screenshotBase64: screenshot,
@@ -269,9 +454,6 @@ export class ServerAutomationEngine {
     return { success: true };
   }
 
-  /**
-   * Try to fill a specific selector with a value
-   */
   private async tryFillSelector(selector: string, value: string, type: string): Promise<boolean> {
     try {
       const el = await this.page!.$(selector);
@@ -285,7 +467,6 @@ export class ServerAutomationEngine {
       } else if (type === 'checkbox') {
         await el.click();
       } else if (type === 'file') {
-        // Skip file uploads in autonomous mode for now
         return false;
       } else {
         await this.page!.click(selector);
@@ -298,14 +479,10 @@ export class ServerAutomationEngine {
     }
   }
 
-  /**
-   * Generate alternative selectors when the primary one fails
-   */
   private generateAlternativeSelectors(field: PlatformField): string[] {
     const alternatives: string[] = [];
     const mapTo = field.mapTo;
 
-    // Common selector patterns for each field type
     if (mapTo === 'name') {
       alternatives.push(
         'input[name*="name"]', 'input[id*="name"]', 'input[placeholder*="name" i]',
@@ -323,7 +500,7 @@ export class ServerAutomationEngine {
       alternatives.push(
         'textarea[name*="description"]', 'textarea[name*="desc"]', 'textarea[name*="about"]',
         'textarea[placeholder*="description" i]', 'textarea[placeholder*="describe" i]',
-        'textarea[id*="description"]', 'textarea', // Last resort: first textarea
+        'textarea[id*="description"]', 'textarea',
         '#description', '#desc', '#about',
         'div[contenteditable="true"]',
       );
@@ -348,19 +525,14 @@ export class ServerAutomationEngine {
     return alternatives;
   }
 
-  /**
-   * Find and fill an input field by its associated label text
-   */
   private async fillByLabel(labelText: string, value: string, type: string): Promise<boolean> {
     try {
-      // Try to find label element and associated input
       const label = await this.page!.$(`label:has-text("${labelText}")`);
       if (label) {
         const forAttr = await label.getAttribute('for');
         if (forAttr) {
           return await this.tryFillSelector(`#${forAttr}`, value, type);
         }
-        // Label might wrap the input
         const input = await label.$('input, textarea, select');
         if (input && await input.isVisible()) {
           if (type === 'select') {
@@ -379,9 +551,6 @@ export class ServerAutomationEngine {
     }
   }
 
-  /**
-   * Find and fill an input field by placeholder text
-   */
   private async fillByPlaceholder(hintText: string, value: string, type: string): Promise<boolean> {
     try {
       const keywords = hintText.toLowerCase().split(' ').filter(w => w.length > 3);
@@ -404,12 +573,9 @@ export class ServerAutomationEngine {
   // === FORM SUBMISSION (ADAPTIVE) ===
 
   private async submitFormAdaptive(platform: PlatformConfig): Promise<AutomationResult> {
-    // Try multiple submit strategies
     const submitStrategies = [
-      // Specific submit buttons
       'button[type="submit"]',
       'input[type="submit"]',
-      // Text-based buttons
       'button:has-text("Submit")',
       'button:has-text("Create")',
       'button:has-text("Add")',
@@ -421,10 +587,8 @@ export class ServerAutomationEngine {
       'button:has-text("Register")',
       'button:has-text("Sign up")',
       'button:has-text("List")',
-      // Links styled as buttons
       'a:has-text("Submit")',
       'a:has-text("Create")',
-      // Generic primary buttons
       'button.btn-primary',
       'button.submit',
       'button.primary',
@@ -438,25 +602,21 @@ export class ServerAutomationEngine {
       try {
         const el = await this.page!.$(sel);
         if (el && await el.isVisible()) {
-          // Scroll into view
           await el.scrollIntoViewIfNeeded().catch(() => {});
           await this.delay(300, 600);
           await el.click();
-          
-          // Wait for navigation or network response
+
           await Promise.race([
             this.page!.waitForLoadState('networkidle', { timeout: 15000 }),
             this.page!.waitForNavigation({ timeout: 15000 }),
-            this.delay(8000, 8000), // Max 8 seconds
+            this.delay(8000, 8000),
           ]).catch(() => {});
 
           await this.delay(2000, 3000);
 
-          // Check if page changed (indicates submission went through)
           const urlAfter = this.page!.url();
           const screenshot = await this.takeScreenshot();
 
-          // Look for success indicators
           const hasSuccess = await this.checkForSuccess();
           const hasError = await this.checkForError();
 
@@ -477,7 +637,6 @@ export class ServerAutomationEngine {
             };
           }
 
-          // Button was clicked but unclear if it worked - assume success if no error
           return {
             success: true,
             submittedUrl: urlAfter,
@@ -495,7 +654,7 @@ export class ServerAutomationEngine {
     return {
       success: false,
       needsManualAction: true,
-      manualActionDescription: `Form filled on ${platform.name} but could not find submit button. Click "Open Platform" to submit manually, then click "Done, Continue".`,
+      manualActionDescription: `Form filled on ${platform.name} but could not find submit button. Submit the form manually in the browser panel, then click "I'm Done, Continue".`,
       actionUrl: currentUrl || platform.submitUrl,
       actionType: 'manual_submit',
       screenshotBase64: screenshot,
@@ -588,7 +747,7 @@ export class ServerAutomationEngine {
     await this.page!.waitForLoadState('networkidle').catch(() => {});
     await this.delay(3000, 5000);
 
-    // Check for CAPTCHA
+    // Check for CAPTCHA on login
     if (await this.detectCaptcha()) {
       const screenshot = await this.takeScreenshot();
       const html = await this.page!.content();
@@ -596,7 +755,7 @@ export class ServerAutomationEngine {
         success: false,
         needsCaptcha: true,
         needsManualAction: true,
-        manualActionDescription: `${platform.name} login has CAPTCHA. Click "Open Platform" to solve it and log in, then click "Done, Continue".`,
+        manualActionDescription: `${platform.name} login has CAPTCHA. Solve it in the browser panel on the right, then click "I'm Done, Continue".`,
         actionUrl: this.page!.url() || `${platform.url}/login`,
         actionType: 'captcha',
         screenshotBase64: screenshot,
@@ -617,7 +776,7 @@ export class ServerAutomationEngine {
       return {
         success: false,
         needsCaptcha: true,
-        manualActionDescription: `${platform.name} has a CAPTCHA challenge. Click "Open Platform" to solve it in your browser, then click "Done, Continue" to retry.`,
+        manualActionDescription: `${platform.name} has a CAPTCHA challenge. Solve it in the browser panel on the right, then click "I'm Done, Continue".`,
         actionUrl: currentUrl || platform.submitUrl,
         actionType: 'captcha',
         screenshotBase64: screenshot,
@@ -645,41 +804,35 @@ export class ServerAutomationEngine {
     return false;
   }
 
-  /**
-   * Handle Cloudflare/Vercel security challenges
-   */
   private async handleSecurityChallenge(platform: PlatformConfig): Promise<AutomationResult | null> {
     try {
-      // Check for Cloudflare challenge page
       const pageText = await this.page!.textContent('body').catch(() => '');
       const title = await this.page!.title().catch(() => '');
-      
-      const isCloudflare = pageText?.includes('Checking your browser') || 
+
+      const isCloudflare = pageText?.includes('Checking your browser') ||
                            pageText?.includes('cloudflare') ||
                            title?.includes('Just a moment') ||
                            title?.includes('Attention Required');
-      
+
       const isVercelChallenge = pageText?.includes('Vercel Security Checkpoint') ||
                                 title?.includes('Vercel Security');
-      
+
       if (isCloudflare || isVercelChallenge) {
-        // Wait for challenge to auto-resolve (some do after 5 seconds)
         console.log(`[Engine] ${platform.name}: Security challenge detected, waiting for auto-resolve...`);
         await this.delay(5000, 8000);
-        
-        // Check if challenge resolved
+
         const newTitle = await this.page!.title().catch(() => '');
         const newText = await this.page!.textContent('body').catch(() => '');
-        const stillChallenged = newTitle?.includes('Just a moment') || 
+        const stillChallenged = newTitle?.includes('Just a moment') ||
                                 newText?.includes('Checking your browser') ||
                                 newText?.includes('Vercel Security');
-        
+
         if (stillChallenged) {
           const screenshot = await this.takeScreenshot();
           return {
             success: false,
             needsManualAction: true,
-            manualActionDescription: `${platform.name} has a security challenge. Click "Open Platform" to pass it in your browser, then click "Done, Continue" to retry.`,
+            manualActionDescription: `${platform.name} has a security challenge. Complete it in the browser panel on the right, then click "I'm Done, Continue".`,
             actionUrl: this.page!.url() || platform.submitUrl,
             actionType: 'security_challenge',
             screenshotBase64: screenshot,
@@ -700,7 +853,7 @@ export class ServerAutomationEngine {
       'button:has-text("Dismiss")', 'button:has-text("No thanks")',
       '[aria-label="Close"]', '[aria-label="close"]',
       'button.close', '.modal-close', '[data-dismiss="modal"]',
-      '#onetrust-accept-btn-handler', // OneTrust cookie banner
+      '#onetrust-accept-btn-handler',
       '.cookie-consent button', '[class*="cookie"] button',
     ];
 
@@ -710,7 +863,7 @@ export class ServerAutomationEngine {
         if (el && await el.isVisible()) {
           await el.click();
           await this.delay(500, 1000);
-          break; // One dismissal is usually enough
+          break;
         }
       } catch {}
     }
@@ -775,7 +928,7 @@ export class ServerAutomationEngine {
       keywords: product.keywords,
       pricing: product.pricing,
       logo: product.logoUrl,
-      email: null, // User must store email in account credentials
+      email: null,
     };
     return map[mapTo] || null;
   }
