@@ -1,6 +1,8 @@
 #!/bin/bash
-# LaunchPilot Worker Startup Script (v2 - Interactive VNC)
+# LaunchPilot Worker Startup Script (v3 - Interactive VNC)
 # Starts Xvfb + x11vnc + noVNC, then runs the worker
+
+set -e  # Exit on error for setup steps (but not for the worker itself)
 
 echo "╔══════════════════════════════════════════╗"
 echo "║    LAUNCH PILOT WORKER - STARTING UP    ║"
@@ -13,14 +15,7 @@ export SCREEN_DEPTH=${SCREEN_DEPTH:-24}
 
 # === Apply database migrations ===
 echo "[Migration] Applying database schema changes..."
-npx prisma db push --accept-data-loss 2>&1
-MIGRATION_EXIT=$?
-
-if [ $MIGRATION_EXIT -ne 0 ]; then
-  echo "[Migration] WARNING: Migration failed (exit code $MIGRATION_EXIT). Starting worker anyway..."
-else
-  echo "[Migration] Database schema is up to date ✓"
-fi
+npx prisma db push --accept-data-loss 2>&1 || echo "[Migration] WARNING: Migration failed. Starting worker anyway..."
 
 # === Start Virtual Display (Xvfb) ===
 echo "[VNC] Starting virtual display (${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH})..."
@@ -46,62 +41,68 @@ else
   echo "[VNC] Fluxbox window manager started ✓"
 
   # === Start VNC Server ===
-  x11vnc -display :99 -forever -nopw -shared -rfbport 5900 -bg -o /tmp/x11vnc.log 2>&1
-  sleep 1
+  x11vnc -display :99 -forever -nopw -shared -rfbport 5900 -bg -o /tmp/x11vnc.log 2>&1 || true
+  sleep 2
 
   # Verify x11vnc is running
-  if netstat -tln 2>/dev/null | grep -q 5900 || ss -tln 2>/dev/null | grep -q 5900; then
+  if ss -tln 2>/dev/null | grep -q 5900; then
     echo "[VNC] x11vnc server started ✓ (port 5900)"
   else
-    echo "[VNC] WARNING: x11vnc may not be listening on port 5900. Checking..."
-    sleep 1
+    echo "[VNC] WARNING: x11vnc may not be listening on 5900, retrying..."
+    x11vnc -display :99 -forever -nopw -shared -rfbport 5900 -bg -o /tmp/x11vnc2.log 2>&1 || true
+    sleep 2
   fi
 
   # === Start noVNC (WebSocket proxy) ===
-  # Try multiple websockify paths
-  WEBSOCKIFY_CMD=""
+  echo "[VNC] Starting noVNC websockify on port 6080..."
+
+  # Try pip-installed websockify first
   if command -v websockify &> /dev/null; then
-    WEBSOCKIFY_CMD="websockify"
-  elif [ -f /opt/novnc/utils/websockify/run ]; then
-    WEBSOCKIFY_CMD="/opt/novnc/utils/websockify/run"
-  elif [ -f /usr/local/bin/websockify ]; then
-    WEBSOCKIFY_CMD="/usr/local/bin/websockify"
-  fi
-
-  if [ -n "$WEBSOCKIFY_CMD" ]; then
-    $WEBSOCKIFY_CMD --web /opt/novnc 6080 localhost:5900 &
+    echo "[VNC] Using system websockify: $(which websockify)"
+    websockify --web /opt/novnc 6080 localhost:5900 &
     NOVNC_PID=$!
-    sleep 2
-
-    # Verify noVNC is running
-    if netstat -tln 2>/dev/null | grep -q 6080 || ss -tln 2>/dev/null | grep -q 6080; then
-      echo "[VNC] noVNC started ✓ (port 6080)"
-      echo "[VNC] Access browser at: http://localhost:6080/vnc.html"
-    else
-      echo "[VNC] WARNING: noVNC may not be running. Retrying with python3 websockify..."
-      # Fallback: use python3 to run websockify from the novnc directory
-      python3 /opt/novnc/utils/websockify/websockify.py --web /opt/novnc 6080 localhost:5900 &
-      NOVNC_PID=$!
-      sleep 2
-      echo "[VNC] noVNC retry attempted (port 6080)"
-    fi
+  elif [ -f /usr/local/bin/websockify ]; then
+    echo "[VNC] Using /usr/local/bin/websockify"
+    /usr/local/bin/websockify --web /opt/novnc 6080 localhost:5900 &
+    NOVNC_PID=$!
   else
-    echo "[VNC] WARNING: websockify not found. Trying python3 fallback..."
+    echo "[VNC] Using python3 websockify module"
     python3 -m websockify --web /opt/novnc 6080 localhost:5900 &
     NOVNC_PID=$!
-    sleep 2
-    echo "[VNC] noVNC started via python3 (port 6080)"
   fi
 
-  # Create a simple HTTP health endpoint for the worker
-  mkdir -p /app/public
-  echo '<!DOCTYPE html><html><head><title>LaunchPilot Worker</title></head><body><h1>LaunchPilot Worker - VNC Ready</h1><p>VNC is available. <a href="/vnc.html">Open VNC</a></p></body></html>' > /app/public/index.html
+  sleep 3
+
+  # Verify noVNC is running
+  if ss -tln 2>/dev/null | grep -q 6080; then
+    echo "[VNC] noVNC started ✓ (port 6080)"
+    echo "[VNC] Access browser at: http://localhost:6080/vnc.html"
+  else
+    echo "[VNC] WARNING: noVNC not listening on 6080. Listing processes:"
+    ps aux | grep -E "websockify|novnc|python" || true
+    echo "[VNC] Trying direct python3 fallback..."
+    python3 -c "
+import websockify
+import sys
+sys.argv = ['websockify', '--web', '/opt/novnc', '6080', 'localhost:5900']
+websockify.websocketproxy.main()
+" &
+    NOVNC_PID=$!
+    sleep 3
+    if ss -tln 2>/dev/null | grep -q 6080; then
+      echo "[VNC] noVNC started via python3 fallback ✓"
+    else
+      echo "[VNC] ERROR: Could not start noVNC. VNC will not be available."
+      echo "[VNC] Worker will continue in headless mode."
+      export HEADLESS=true
+    fi
+  fi
 fi
 
 # Set up cleanup traps BEFORE starting the worker
 cleanup() {
   echo "[Shutdown] Cleaning up..."
-  kill $XVFB_PID $FLUXBOX_PID $NOVNC_PID 2>/dev/null
+  kill $XVFB_PID $FLUXBOX_PID $NOVNC_PID 2>/dev/null || true
   exit 0
 }
 trap cleanup SIGINT SIGTERM
@@ -111,7 +112,9 @@ echo ""
 echo "[Worker] Starting automation worker..."
 echo "[Worker] HEADLESS=${HEADLESS}"
 echo "[Worker] VNC_ENABLED=${VNC_ENABLED}"
-echo "[Worker] DISPLAY=${DISPLAY}"
+echo "[Worker] DISPLAY=${DISPLAY:-not set}"
 echo ""
 
+# Use set +e so worker crashes don't prevent cleanup
+set +e
 npx tsx src/lib/queue/worker.ts

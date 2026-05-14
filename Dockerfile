@@ -1,4 +1,4 @@
-# LaunchPilot - Worker Dockerfile (v2 - Interactive VNC)
+# LaunchPilot - Worker Dockerfile (v3 - Interactive VNC)
 # Runs the background automation worker with Playwright + Chromium
 # Includes Xvfb + x11vnc + noVNC for interactive browser access
 
@@ -41,17 +41,27 @@ RUN apt-get update && apt-get install -y \
     xvfb \
     x11vnc \
     fluxbox \
-    # noVNC dependencies
+    # noVNC / Python dependencies
     python3 \
+    python3-pip \
+    python3-numpy \
     netcat-openbsd \
+    iproute2 \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Install noVNC and websockify
+# Install websockify via pip (more reliable than from source)
+RUN pip3 install --break-system-packages websockify 2>/dev/null || pip3 install websockify 2>/dev/null || true
+
+# Install noVNC
 RUN mkdir -p /opt/novnc \
     && wget -qO- https://github.com/novnc/noVNC/archive/refs/tags/v1.4.0.tar.gz | tar xz --strip 1 -C /opt/novnc \
-    && mkdir -p /opt/novnc/utils \
-    && wget -qO- https://github.com/novnc/websockify/archive/refs/tags/v0.12.0.tar.gz | tar xz --strip 1 -C /opt/novnc/utils/websockify \
-    && cd /opt/novnc/utils/websockify && python3 setup.py install 2>/dev/null || true
+    && ls -la /opt/novnc/ \
+    && ls -la /opt/novnc/vnc.html \
+    && echo "noVNC installed successfully"
+
+# Verify websockify is available
+RUN which websockify && websockify --version || echo "websockify not in PATH, will use python3 fallback"
 
 # Copy Prisma schema first (needed by postinstall)
 COPY package.json package-lock.json* ./
