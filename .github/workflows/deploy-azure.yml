@@ -51,26 +51,57 @@ jobs:
             --name ${{ env.WEB_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --image ${{ env.ACR_NAME }}.azurecr.io/launchpilot-web:${{ github.sha }} \
-            --set-env-vars "NODE_ENV=production" "NEXT_PUBLIC_VNC_URL=https://lp-worker.jollyhill-e873fff9.eastus2.azurecontainerapps.io"
+            --set-env-vars \
+              "NODE_ENV=production" \
+              "NEXT_PUBLIC_VNC_URL=https://lp-worker.jollyhill-e873fff9.eastus2.azurecontainerapps.io"
 
-      - name: Update worker container app with VNC port
+      - name: Configure worker ingress for VNC
         run: |
-          # First, try to add the VNC ingress port if not already configured
-          az containerapp ingress update \
+          # Try to enable ingress on the worker for VNC access
+          # First check if ingress already exists
+          INGRESS_TYPE=$(az containerapp show \
             --name ${{ env.WORKER_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --target-port 6080 \
-            --transport http \
-            --type external \
-            --allow-insecure true \
-            2>/dev/null || echo "Ingress update attempted (may already be configured)"
+            --query "properties.ingress.type" -o tsv 2>/dev/null || echo "none")
 
-          # Update the container image and environment
+          echo "Current ingress type: $INGRESS_TYPE"
+
+          if [ "$INGRESS_TYPE" = "None" ] || [ "$INGRESS_TYPE" = "none" ] || [ -z "$INGRESS_TYPE" ]; then
+            echo "Setting up external ingress on port 6080 for VNC..."
+            az containerapp ingress enable \
+              --name ${{ env.WORKER_APP }} \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --type external \
+              --target-port 6080 \
+              --transport http \
+              --allow-insecure true \
+              2>&1 || echo "Ingress enable attempted (may already exist)"
+          else
+            echo "Updating existing ingress to port 6080 for VNC..."
+            az containerapp ingress update \
+              --name ${{ env.WORKER_APP }} \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --target-port 6080 \
+              --transport http \
+              --type external \
+              --allow-insecure true \
+              2>&1 || echo "Ingress update attempted"
+          fi
+
+      - name: Update worker container app
+        run: |
           az containerapp update \
             --name ${{ env.WORKER_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --image ${{ env.ACR_NAME }}.azurecr.io/launchpilot-worker:${{ github.sha }} \
-            --set-env-vars "NODE_ENV=production" "HEADLESS=false" "VNC_ENABLED=true" "DISPLAY=:99" "SCREEN_WIDTH=1280" "SCREEN_HEIGHT=720" "SCREEN_DEPTH=24"
+            --set-env-vars \
+              "NODE_ENV=production" \
+              "HEADLESS=false" \
+              "VNC_ENABLED=true" \
+              "DISPLAY=:99" \
+              "SCREEN_WIDTH=1280" \
+              "SCREEN_HEIGHT=720" \
+              "SCREEN_DEPTH=24"
 
       - name: Run database migrations
         run: |
@@ -80,23 +111,30 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
-      - name: Health check
+      - name: Health check - Web App
         run: |
           sleep 30
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://lp-web.jollyhill-e873fff9.eastus2.azurecontainerapps.io)
           if [ "$STATUS" != "200" ]; then
-            echo "Health check failed with status $STATUS"
+            echo "Web health check failed with status $STATUS"
             exit 1
           fi
-          echo "Health check passed!"
+          echo "Web health check passed ✓"
 
-      - name: VNC check
+      - name: Health check - Worker VNC
         run: |
-          sleep 10
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://lp-worker.jollyhill-e873fff9.eastus2.azurecontainerapps.io/vnc.html || echo "000")
-          echo "Worker VNC endpoint status: $STATUS"
-          if [ "$STATUS" = "200" ]; then
-            echo "VNC endpoint is accessible ✓"
-          else
-            echo "VNC endpoint not yet available (status: $STATUS). May need manual ingress configuration."
-          fi
+          sleep 15
+          # The worker needs more time to start up Xvfb + VNC
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://lp-worker.jollyhill-e873fff9.eastus2.azurecontainerapps.io/vnc.html || echo "000")
+            echo "VNC check attempt $i: status $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "VNC endpoint is accessible ✓"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "WARNING: VNC endpoint not yet available. May need manual ingress configuration."
+          echo "Check worker logs: az containerapp logs show --name lp-worker --resource-group rg-launchpilot"
+          # Don't fail the build just because VNC isn't ready yet
+          exit 0
