@@ -87,6 +87,10 @@ export class ServerAutomationEngine {
       // Dismiss any cookie/popup overlays
       await this.dismissOverlays();
 
+      // Check for Cloudflare/security challenge
+      const challengeResult = await this.handleSecurityChallenge(platform);
+      if (challengeResult) return challengeResult;
+
       // Check for CAPTCHA
       const captchaResult = await this.handleCaptcha(platform);
       if (captchaResult) return captchaResult;
@@ -167,7 +171,10 @@ export class ServerAutomationEngine {
     for (let i = 0; i < 3; i++) {
       try {
         await this.page!.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        await this.delay(1000, 2000);
+        // Wait for JS-rendered content to appear
+        await this.delay(2000, 4000);
+        // Try to wait for network to settle (JS frameworks loading)
+        await this.page!.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
         return;
       } catch (e: any) {
         if (i === 2) throw new Error(`Failed to navigate to ${url}: ${e.message}`);
@@ -596,6 +603,49 @@ export class ServerAutomationEngine {
       } catch {}
     }
     return false;
+  }
+
+  /**
+   * Handle Cloudflare/Vercel security challenges
+   */
+  private async handleSecurityChallenge(platform: PlatformConfig): Promise<AutomationResult | null> {
+    try {
+      // Check for Cloudflare challenge page
+      const pageText = await this.page!.textContent('body').catch(() => '');
+      const title = await this.page!.title().catch(() => '');
+      
+      const isCloudflare = pageText?.includes('Checking your browser') || 
+                           pageText?.includes('cloudflare') ||
+                           title?.includes('Just a moment') ||
+                           title?.includes('Attention Required');
+      
+      const isVercelChallenge = pageText?.includes('Vercel Security Checkpoint') ||
+                                title?.includes('Vercel Security');
+      
+      if (isCloudflare || isVercelChallenge) {
+        // Wait for challenge to auto-resolve (some do after 5 seconds)
+        console.log(`[Engine] ${platform.name}: Security challenge detected, waiting for auto-resolve...`);
+        await this.delay(5000, 8000);
+        
+        // Check if challenge resolved
+        const newTitle = await this.page!.title().catch(() => '');
+        const newText = await this.page!.textContent('body').catch(() => '');
+        const stillChallenged = newTitle?.includes('Just a moment') || 
+                                newText?.includes('Checking your browser') ||
+                                newText?.includes('Vercel Security');
+        
+        if (stillChallenged) {
+          const screenshot = await this.takeScreenshot();
+          return {
+            success: false,
+            needsManualAction: true,
+            manualActionDescription: `${platform.name} has Cloudflare/Vercel security protection that blocks automated access. Manual submission required.`,
+            screenshotBase64: screenshot,
+          };
+        }
+      }
+    } catch {}
+    return null;
   }
 
   // === HELPERS ===

@@ -47,6 +47,7 @@ export async function addCampaignToQueue(campaignId: string, userId: string): Pr
   });
 
   if (!campaign) throw new Error('Campaign not found');
+  if (!campaign.product) throw new Error('Campaign product not found. Please ensure the product still exists.');
 
   const platforms: string[] = JSON.parse(campaign.targetPlatforms);
 
@@ -117,6 +118,7 @@ export async function retrySubmission(submissionId: string, userId: string): Pro
   });
 
   if (!submission) throw new Error('Submission not found');
+  if (!submission.campaign?.product) throw new Error('Product data not found for this submission');
 
   // Reset status
   await prisma.submission.update({
