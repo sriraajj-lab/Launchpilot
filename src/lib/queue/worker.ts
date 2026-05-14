@@ -307,6 +307,8 @@ async function processSubmissionJob(job: any) {
     data: {
       status: finalStatus,
       resultUrl: result.submittedUrl || null,
+      actionUrl: result.actionUrl || null,
+      actionType: result.actionType || null,
       error: result.error || result.manualActionDescription || null,
       screenshot: result.screenshotBase64 ? result.screenshotBase64.substring(0, 5000) : null, // Truncate to save DB space
     },
@@ -321,8 +323,8 @@ async function processSubmissionJob(job: any) {
   // Check if all submissions in campaign are done
   await checkCampaignCompletion(data.campaignId);
 
-  const statusEmoji = finalStatus === 'success' ? '✓' : finalStatus === 'captcha_needed' ? '⚠' : '✗';
-  console.log(`[Submit] ${statusEmoji} ${data.platformId}: ${finalStatus}${result.submittedUrl ? ` (${result.submittedUrl})` : ''}`);
+  const statusEmoji = finalStatus === 'success' ? '✓' : finalStatus === 'captcha_needed' ? '🔐' : finalStatus === 'manual_needed' ? '👆' : '✗';
+  console.log(`[Submit] ${statusEmoji} ${data.platformId}: ${finalStatus}${result.submittedUrl ? ` (${result.submittedUrl})` : ''}${result.actionUrl ? ` | Action URL: ${result.actionUrl}` : ''}${result.actionType ? ` | Action: ${result.actionType}` : ''}`);
 }
 
 /**

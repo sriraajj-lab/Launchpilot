@@ -1,4 +1,4 @@
-# SparkBill - Worker Dockerfile
+# LaunchPilot - Worker Dockerfile
 # Runs the background automation worker with Playwright + Chromium
 
 FROM node:20-bookworm
@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y \
     libappindicator3-1 \
     libu2f-udev \
     libvulkan1 \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Prisma schema first (needed by postinstall)
@@ -51,8 +52,12 @@ RUN npx playwright install chromium
 COPY tsconfig.json ./
 COPY src ./src
 
-# Default: run the worker
+# Copy startup script
+COPY start-worker.sh ./
+RUN chmod +x start-worker.sh
+
+# Default: run the worker with migration
 ENV NODE_ENV=production
 ENV HEADLESS=true
 
-CMD ["npx", "tsx", "src/lib/queue/worker.ts"]
+CMD ["./start-worker.sh"]

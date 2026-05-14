@@ -38,6 +38,8 @@ export interface AutomationResult {
   needsManualAction?: boolean;
   manualActionDescription?: string;
   pageHtml?: string; // For captcha siteKey extraction
+  actionUrl?: string;  // URL the user should visit to complete action
+  actionType?: 'captcha' | 'login' | 'manual_submit' | 'payment' | 'security_challenge'; // What the user needs to do
 }
 
 const USER_AGENTS = [
@@ -76,8 +78,35 @@ export class ServerAutomationEngine {
       // Login if required
       if (platform.loginRequired && credentials) {
         const loginOk = await this.loginToPlatform(platform, credentials);
-        if (!loginOk.success) return loginOk;
+        if (!loginOk.success) {
+          // If login failed due to CAPTCHA or other issue, provide the login URL
+          if (loginOk.needsCaptcha || loginOk.needsManualAction) {
+            return {
+              ...loginOk,
+              actionUrl: loginOk.actionUrl || `${platform.url}/login`,
+              actionType: loginOk.needsCaptcha ? 'captcha' : 'login',
+            };
+          }
+          return {
+            ...loginOk,
+            actionUrl: `${platform.url}/login`,
+            actionType: 'login',
+          };
+        }
         await this.delay(2000, 4000);
+      }
+
+      // If login is required but no credentials provided, alert the user
+      if (platform.loginRequired && !credentials) {
+        const screenshot = await this.takeScreenshot();
+        return {
+          success: false,
+          needsManualAction: true,
+          manualActionDescription: `${platform.name} requires you to log in first. Click "Open Platform" to go to the login page, sign in, then come back and click "Done, Continue".`,
+          actionUrl: platform.url,
+          actionType: 'login',
+          screenshotBase64: screenshot,
+        };
       }
 
       // Navigate to submission page
@@ -226,10 +255,13 @@ export class ServerAutomationEngine {
     // Need at least URL filled to consider it worthwhile
     if (fieldsFilledCount === 0) {
       const screenshot = await this.takeScreenshot();
+      const currentUrl = this.page!.url();
       return {
         success: false,
         needsManualAction: true,
-        manualActionDescription: `Could not find any form fields on ${platform.name}. Page structure may have changed.`,
+        manualActionDescription: `Could not find form fields on ${platform.name}. The page may require login or has changed. Click "Open Platform" to submit manually, then click "Done, Continue".`,
+        actionUrl: currentUrl || platform.submitUrl,
+        actionType: 'manual_submit',
         screenshotBase64: screenshot,
       };
     }
@@ -459,10 +491,13 @@ export class ServerAutomationEngine {
 
     // No submit button found
     const screenshot = await this.takeScreenshot();
+    const currentUrl = this.page!.url();
     return {
       success: false,
       needsManualAction: true,
-      manualActionDescription: `Form filled on ${platform.name} but could not find submit button`,
+      manualActionDescription: `Form filled on ${platform.name} but could not find submit button. Click "Open Platform" to submit manually, then click "Done, Continue".`,
+      actionUrl: currentUrl || platform.submitUrl,
+      actionType: 'manual_submit',
       screenshotBase64: screenshot,
     };
   }
@@ -516,7 +551,7 @@ export class ServerAutomationEngine {
     }
 
     if (!emailFilled) {
-      return { success: false, error: `Cannot find login form on ${platform.name}` };
+      return { success: false, error: `Cannot find login form on ${platform.name}`, actionUrl: `${platform.url}/login`, actionType: 'login' as const };
     }
 
     await this.delay(500, 1000);
@@ -561,7 +596,9 @@ export class ServerAutomationEngine {
         success: false,
         needsCaptcha: true,
         needsManualAction: true,
-        manualActionDescription: `${platform.name} login has CAPTCHA`,
+        manualActionDescription: `${platform.name} login has CAPTCHA. Click "Open Platform" to solve it and log in, then click "Done, Continue".`,
+        actionUrl: this.page!.url() || `${platform.url}/login`,
+        actionType: 'captcha',
         screenshotBase64: screenshot,
         pageHtml: html,
       };
@@ -576,10 +613,13 @@ export class ServerAutomationEngine {
     if (await this.detectCaptcha()) {
       const screenshot = await this.takeScreenshot();
       const html = await this.page!.content();
+      const currentUrl = this.page!.url();
       return {
         success: false,
         needsCaptcha: true,
-        manualActionDescription: `${platform.name} has CAPTCHA`,
+        manualActionDescription: `${platform.name} has a CAPTCHA challenge. Click "Open Platform" to solve it in your browser, then click "Done, Continue" to retry.`,
+        actionUrl: currentUrl || platform.submitUrl,
+        actionType: 'captcha',
         screenshotBase64: screenshot,
         pageHtml: html,
       };
@@ -639,7 +679,9 @@ export class ServerAutomationEngine {
           return {
             success: false,
             needsManualAction: true,
-            manualActionDescription: `${platform.name} has Cloudflare/Vercel security protection that blocks automated access. Manual submission required.`,
+            manualActionDescription: `${platform.name} has a security challenge. Click "Open Platform" to pass it in your browser, then click "Done, Continue" to retry.`,
+            actionUrl: this.page!.url() || platform.submitUrl,
+            actionType: 'security_challenge',
             screenshotBase64: screenshot,
           };
         }

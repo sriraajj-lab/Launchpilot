@@ -2,9 +2,11 @@
 
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import { useState, useEffect, useCallback } from 'react';
 import {
-  ArrowLeft, Play, Pause, CheckCircle, XCircle, Clock, AlertTriangle,
-  Loader2, ExternalLink, RotateCcw, Globe, Zap
+  ArrowLeft, Play, CheckCircle, XCircle, Clock, AlertTriangle,
+  Loader2, ExternalLink, RotateCcw, Globe, Zap, Shield, LogIn,
+  Bell, BellRing, MousePointerClick, CheckCheck, X as XIcon,
 } from 'lucide-react';
 import { useCampaign } from '@/lib/hooks';
 import { formatDistanceToNow } from 'date-fns';
@@ -14,6 +16,47 @@ export default function CampaignDetailPage() {
   const params = useParams();
   const campaignId = params.id as string;
   const { data: campaign, isLoading, mutate } = useCampaign(campaignId);
+  const [actionAlerts, setActionAlerts] = useState<any[]>([]);
+  const [previousPending, setPreviousPending] = useState<Set<string>>(new Set());
+  const [showAlerts, setShowAlerts] = useState(true);
+
+  // Track new action-required submissions and show alerts
+  useEffect(() => {
+    if (!campaign?.submissions) return;
+
+    const currentActionSubs = campaign.submissions.filter(
+      (s: any) => ['captcha_needed', 'manual_needed'].includes(s.status)
+    );
+
+    const currentActionIds = new Set(currentActionSubs.map((s: any) => s.id));
+
+    // Find newly action-required submissions (weren't in previous poll)
+    const newAlerts = currentActionSubs.filter(
+      (s: any) => !previousPending.has(s.id)
+    );
+
+    if (newAlerts.length > 0 && previousPending.size > 0) {
+      // Show toast notifications for each new alert
+      newAlerts.forEach((s: any) => {
+        const actionLabel = s.actionType === 'captcha' ? 'CAPTCHA' :
+                           s.actionType === 'login' ? 'Login Required' :
+                           s.actionType === 'security_challenge' ? 'Security Check' :
+                           'Manual Action';
+        toast.warning(`${s.platformName}: ${actionLabel} needed!`, {
+          duration: 8000,
+          action: {
+            label: 'Open',
+            onClick: () => {
+              if (s.actionUrl) window.open(s.actionUrl, '_blank');
+            },
+          },
+        });
+      });
+    }
+
+    setActionAlerts(currentActionSubs);
+    setPreviousPending(currentActionIds);
+  }, [campaign?.submissions]);
 
   const launchCampaign = async () => {
     try {
@@ -37,6 +80,40 @@ export default function CampaignDetailPage() {
     } catch (error: any) {
       toast.error(error.message);
     }
+  };
+
+  const markSubmissionDone = async (submissionId: string, action: 'mark_done' | 'mark_failed' | 'retry_after_action', resultUrl?: string) => {
+    try {
+      const res = await fetch(`/api/campaigns/${campaignId}/submissions/${submissionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, resultUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      if (action === 'mark_done') {
+        toast.success('Marked as completed!');
+      } else if (action === 'retry_after_action') {
+        toast.success('Worker will retry the submission now. Complete the CAPTCHA/login in the opened tab first!');
+      } else {
+        toast.success('Marked as failed');
+      }
+      mutate();
+    } catch (error: any) {
+      toast.error(error.message);
+    }
+  };
+
+  const openPlatformAndRetry = async (submission: any) => {
+    // Open the platform URL in a new tab for the user
+    if (submission.actionUrl) {
+      window.open(submission.actionUrl, '_blank');
+    }
+    // Tell the user to come back after they complete the action
+    toast.info(`Complete the action on ${submission.platformName}, then click "Done, Continue" when you're ready for the worker to retry.`, {
+      duration: 10000,
+    });
   };
 
   if (isLoading) {
@@ -95,6 +172,38 @@ export default function CampaignDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Action Alerts Banner */}
+      {actionAlerts.length > 0 && showAlerts && (
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <BellRing size={20} className="text-amber-600 animate-pulse" />
+              <h3 className="text-lg font-bold text-amber-800">
+                {actionAlerts.length} Platform{actionAlerts.length > 1 ? 's' : ''} Need Your Attention
+              </h3>
+            </div>
+            <button
+              onClick={() => setShowAlerts(!showAlerts)}
+              className="text-amber-600 hover:text-amber-800"
+            >
+              {showAlerts ? <XIcon size={18} /> : <Bell size={18} />}
+            </button>
+          </div>
+          <div className="space-y-2">
+            {actionAlerts.map((sub: any) => (
+              <ActionAlertCard
+                key={sub.id}
+                submission={sub}
+                onOpenPlatform={openPlatformAndRetry}
+                onMarkDone={(resultUrl) => markSubmissionDone(sub.id, 'mark_done', resultUrl)}
+                onRetryAfterAction={() => markSubmissionDone(sub.id, 'retry_after_action')}
+                onMarkFailed={() => markSubmissionDone(sub.id, 'mark_failed')}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -168,66 +277,235 @@ export default function CampaignDetailPage() {
             <p className="text-gray-400">No submissions yet</p>
           </div>
         ) : (
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Platform</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Result</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Attempt</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {campaign.submissions.map((submission: any) => (
-                <tr key={submission.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <Globe size={16} className="text-gray-400" />
-                      <span className="font-medium text-gray-900">{submission.platformName}</span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <SubmissionStatusBadge status={submission.status} />
-                  </td>
-                  <td className="px-6 py-4">
-                    {submission.resultUrl ? (
-                      <a href={submission.resultUrl} target="_blank" rel="noopener noreferrer"
-                        className="text-sm text-brand-600 hover:text-brand-700 flex items-center gap-1">
-                        View <ExternalLink size={12} />
-                      </a>
-                    ) : submission.error ? (
-                      <span className="text-sm text-red-500 truncate max-w-xs block" title={submission.error}>
-                        {submission.error.length > 60 ? submission.error.slice(0, 60) + '...' : submission.error}
-                      </span>
-                    ) : (
-                      <span className="text-sm text-gray-400">-</span>
-                    )}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-500">
-                    {submission.lastAttempt
-                      ? formatDistanceToNow(new Date(submission.lastAttempt), { addSuffix: true })
-                      : '-'}
-                  </td>
-                  <td className="px-6 py-4">
-                    {(submission.status === 'failed' || submission.status === 'captcha_needed' || submission.status === 'manual_needed') && (
-                      <button
-                        onClick={() => retrySubmission(submission.id)}
-                        className="inline-flex items-center gap-1 text-sm text-brand-600 hover:text-brand-700 font-medium"
-                      >
-                        <RotateCcw size={14} /> Retry
-                      </button>
-                    )}
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Platform</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">What&apos;s Needed</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Result</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Attempt</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {campaign.submissions.map((submission: any) => (
+                  <tr key={submission.id} className={`hover:bg-gray-50 ${['captcha_needed', 'manual_needed'].includes(submission.status) ? 'bg-amber-50/50' : ''}`}>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-2">
+                        <Globe size={16} className="text-gray-400" />
+                        <span className="font-medium text-gray-900">{submission.platformName}</span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <SubmissionStatusBadge status={submission.status} />
+                    </td>
+                    <td className="px-6 py-4">
+                      {['captcha_needed', 'manual_needed'].includes(submission.status) ? (
+                        <div className="max-w-xs">
+                          <ActionTypeBadge actionType={submission.actionType} />
+                          {submission.error && (
+                            <p className="text-xs text-gray-500 mt-1 line-clamp-2" title={submission.error}>
+                              {submission.error}
+                            </p>
+                          )}
+                        </div>
+                      ) : submission.error ? (
+                        <span className="text-sm text-red-500 truncate max-w-xs block" title={submission.error}>
+                          {submission.error.length > 60 ? submission.error.slice(0, 60) + '...' : submission.error}
+                        </span>
+                      ) : (
+                        <span className="text-sm text-gray-400">-</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      {submission.resultUrl ? (
+                        <a href={submission.resultUrl} target="_blank" rel="noopener noreferrer"
+                          className="text-sm text-brand-600 hover:text-brand-700 flex items-center gap-1">
+                          View <ExternalLink size={12} />
+                        </a>
+                      ) : (
+                        <span className="text-sm text-gray-400">-</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-500">
+                      {submission.lastAttempt
+                        ? formatDistanceToNow(new Date(submission.lastAttempt), { addSuffix: true })
+                        : '-'}
+                    </td>
+                    <td className="px-6 py-4">
+                      <SubmissionActions
+                        submission={submission}
+                        onRetry={() => retrySubmission(submission.id)}
+                        onOpenPlatform={() => openPlatformAndRetry(submission)}
+                        onMarkDone={(resultUrl) => markSubmissionDone(submission.id, 'mark_done', resultUrl)}
+                        onRetryAfterAction={() => markSubmissionDone(submission.id, 'retry_after_action')}
+                        onMarkFailed={() => markSubmissionDone(submission.id, 'mark_failed')}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>
   );
 }
+
+// === Action Alert Card (shown at top when submissions need attention) ===
+
+function ActionAlertCard({ submission, onOpenPlatform, onMarkDone, onRetryAfterAction, onMarkFailed }: {
+  submission: any;
+  onOpenPlatform: (sub: any) => void;
+  onMarkDone: (resultUrl?: string) => void;
+  onRetryAfterAction: () => void;
+  onMarkFailed: () => void;
+}) {
+  const getActionInstructions = (actionType: string | null, platformName: string) => {
+    switch (actionType) {
+      case 'captcha':
+        return `1. Click "Open Platform" to open ${platformName}\n2. Solve the CAPTCHA challenge\n3. Come back and click "Done, Continue" to let the worker retry, or "Mark Done" if you submitted manually`;
+      case 'login':
+        return `1. Click "Open Platform" to go to ${platformName}\n2. Log in to your account\n3. Come back and click "Done, Continue" so the worker can retry with your session`;
+      case 'security_challenge':
+        return `1. Click "Open Platform" to open ${platformName}\n2. Pass the security verification (Cloudflare, etc.)\n3. Come back and click "Done, Continue" to retry`;
+      case 'manual_submit':
+        return `1. Click "Open Platform" to open ${platformName}'s submission page\n2. Fill in and submit the form manually\n3. Click "Mark Done" when finished`;
+      default:
+        return `1. Click "Open Platform" to open the site\n2. Complete the required action\n3. Come back and click "Done, Continue" or "Mark Done"`;
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-lg border border-amber-200 p-3 shadow-sm">
+      <div className="flex items-start justify-between">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <ActionTypeBadge actionType={submission.actionType} />
+            <span className="font-semibold text-gray-900">{submission.platformName}</span>
+          </div>
+          <p className="text-sm text-gray-600 whitespace-pre-line">
+            {getActionInstructions(submission.actionType, submission.platformName)}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 ml-4 shrink-0">
+          {submission.actionUrl && (
+            <button
+              onClick={() => onOpenPlatform(submission)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium shadow-sm"
+            >
+              <ExternalLink size={14} /> Open Platform
+            </button>
+          )}
+          <button
+            onClick={onRetryAfterAction}
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium shadow-sm"
+            title="I completed the action - retry the automated submission"
+          >
+            <CheckCheck size={14} /> Done, Continue
+          </button>
+          <button
+            onClick={() => onMarkDone()}
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors text-sm font-medium"
+            title="I submitted manually - mark as done"
+          >
+            <MousePointerClick size={14} /> Mark Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// === Submission Actions (per-row in the table) ===
+
+function SubmissionActions({ submission, onRetry, onOpenPlatform, onMarkDone, onRetryAfterAction, onMarkFailed }: {
+  submission: any;
+  onRetry: () => void;
+  onOpenPlatform: () => void;
+  onMarkDone: (resultUrl?: string) => void;
+  onRetryAfterAction: () => void;
+  onMarkFailed: () => void;
+}) {
+  const status = submission.status;
+
+  if (status === 'success') {
+    return (
+      <span className="inline-flex items-center gap-1 text-sm text-green-600">
+        <CheckCircle size={14} /> Done
+      </span>
+    );
+  }
+
+  if (status === 'running') {
+    return (
+      <span className="inline-flex items-center gap-1 text-sm text-blue-600">
+        <Loader2 size={14} className="animate-spin" /> Processing...
+      </span>
+    );
+  }
+
+  if (['pending', 'queued'].includes(status)) {
+    return (
+      <span className="inline-flex items-center gap-1 text-sm text-gray-500">
+        <Clock size={14} /> Waiting...
+      </span>
+    );
+  }
+
+  if (['captcha_needed', 'manual_needed'].includes(status)) {
+    return (
+      <div className="flex items-center gap-2 flex-wrap">
+        {submission.actionUrl && (
+          <button
+            onClick={onOpenPlatform}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-xs font-medium"
+          >
+            <ExternalLink size={12} /> Open
+          </button>
+        )}
+        <button
+          onClick={onRetryAfterAction}
+          className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors text-xs font-medium"
+          title="I completed the required action - retry now"
+        >
+          <CheckCheck size={12} /> Done, Retry
+        </button>
+        <button
+          onClick={() => onMarkDone()}
+          className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-gray-500 text-white rounded-md hover:bg-gray-600 transition-colors text-xs font-medium"
+          title="I submitted manually"
+        >
+          <MousePointerClick size={12} /> Mark Done
+        </button>
+        <button
+          onClick={onMarkFailed}
+          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-gray-400 hover:text-red-500 transition-colors text-xs"
+          title="Skip this platform"
+        >
+          <XIcon size={12} />
+        </button>
+      </div>
+    );
+  }
+
+  // Failed
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        onClick={onRetry}
+        className="inline-flex items-center gap-1 text-sm text-brand-600 hover:text-brand-700 font-medium"
+      >
+        <RotateCcw size={14} /> Retry
+      </button>
+    </div>
+  );
+}
+
+// === Sub-components ===
 
 function CampaignStatusBadge({ status }: { status: string }) {
   const config: Record<string, { color: string; label: string }> = {
@@ -249,13 +527,33 @@ function SubmissionStatusBadge({ status }: { status: string }) {
     running: { color: 'bg-blue-100 text-blue-700', label: 'Running', icon: Loader2 },
     success: { color: 'bg-green-100 text-green-700', label: 'Success', icon: CheckCircle },
     failed: { color: 'bg-red-100 text-red-700', label: 'Failed', icon: XCircle },
-    captcha_needed: { color: 'bg-purple-100 text-purple-700', label: 'CAPTCHA Needed', icon: AlertTriangle },
-    manual_needed: { color: 'bg-orange-100 text-orange-700', label: 'Manual Needed', icon: AlertTriangle },
+    captcha_needed: { color: 'bg-purple-100 text-purple-700', label: 'CAPTCHA Needed', icon: Shield },
+    manual_needed: { color: 'bg-orange-100 text-orange-700', label: 'Action Needed', icon: AlertTriangle },
   };
   const { color, label, icon: Icon } = config[status] || config.pending;
   return (
     <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${color}`}>
       <Icon size={12} className={status === 'running' ? 'animate-spin' : ''} /> {label}
+    </span>
+  );
+}
+
+function ActionTypeBadge({ actionType }: { actionType: string | null }) {
+  if (!actionType) return null;
+
+  const config: Record<string, { color: string; label: string; icon: any }> = {
+    captcha: { color: 'bg-purple-100 text-purple-700 border-purple-200', label: 'CAPTCHA', icon: Shield },
+    login: { color: 'bg-blue-100 text-blue-700 border-blue-200', label: 'Login Required', icon: LogIn },
+    manual_submit: { color: 'bg-orange-100 text-orange-700 border-orange-200', label: 'Manual Submit', icon: MousePointerClick },
+    payment: { color: 'bg-pink-100 text-pink-700 border-pink-200', label: 'Payment Required', icon: Zap },
+    security_challenge: { color: 'bg-red-100 text-red-700 border-red-200', label: 'Security Check', icon: Shield },
+  };
+
+  const { color, label, icon: Icon } = config[actionType] || { color: 'bg-gray-100 text-gray-700 border-gray-200', label: actionType, icon: AlertTriangle };
+
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${color}`}>
+      <Icon size={10} /> {label}
     </span>
   );
 }

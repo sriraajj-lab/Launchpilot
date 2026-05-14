@@ -113,8 +113,10 @@ model Submission {
   campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   platform    String    // e.g., "product_hunt", "betalist", "reddit"
   platformName String   // display name
-  status      String    @default("pending") // pending, queued, running, success, failed, captcha_needed, manual_needed
+  status      String    @default("pending") // pending, queued, running, success, failed, captcha_needed, manual_needed, action_required
   resultUrl   String?   // resulting URL after submission
+  actionUrl   String?   // URL the user should visit to complete CAPTCHA/login manually
+  actionType  String?   // "captcha", "login", "manual_submit", "payment" - what the user needs to do
   error       String?
   screenshot  String?   // base64 or URL to screenshot
   attempts    Int       @default(0)
